@@ -1,0 +1,24 @@
+retargeting:
+  type: position
+  urdf_path: fourier_right_hand_6dof.urdf
+
+  target_joint_names:
+    - "R_pinky_proximal_joint"
+    - "R_ring_proximal_joint"
+    - "R_middle_proximal_joint"
+    - "R_index_proximal_joint"
+    - "R_thumb_proximal_pitch_joint"
+    - "R_thumb_proximal_yaw_joint"
+
+  target_link_names:
+    - "R_pinky_intermediate_link"
+    - "R_ring_intermediate_link"
+    - "R_middle_intermediate_link"
+    - "R_index_intermediate_link"
+    - "R_thumb_distal_link"
+    - "r_palm"
+
+  target_link_human_indices: [4, 8, 12, 16, 20, 0]
+  add_dummy_free_joint: True
+  low_pass_alpha: 1
+  ignore_mimic_joint: False

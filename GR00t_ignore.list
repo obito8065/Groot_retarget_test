@@ -1,0 +1,12 @@
+# 排除名为output的文件夹（无论在哪个层级）
+output/
+# 排除名为wandb的文件夹（无论在哪个层级）
+wandb/
+# 排除以output开头的文件（可选，根据实际情况）
+output*
+# 排除以wandb开头的文件（可选）
+wandb*
+# 排除隐藏文件（可选，如.git、.DS_Store等）
+.*
+
+demo_data/

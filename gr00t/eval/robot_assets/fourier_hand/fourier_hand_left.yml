@@ -1,0 +1,26 @@
+retargeting:
+  type: position
+  urdf_path: fourier_left_hand_6dof.urdf
+
+  # 目标关节（按 retarget 顺序）
+  target_joint_names:
+    - "L_pinky_proximal_joint"
+    - "L_ring_proximal_joint"
+    - "L_middle_proximal_joint"
+    - "L_index_proximal_joint"
+    - "L_thumb_proximal_pitch_joint"
+    - "L_thumb_proximal_yaw_joint"
+
+  # 目标 link（对应上面每个关节的末端/目标位置）
+  target_link_names:
+    - "L_thumb_tip_link"
+    - "L_ring_tip_link"
+    - "L_middle_tip_link"
+    - "L_index_tip_link"
+    - "L_thumb_distal_link"
+    - "L_hand_base_link"
+
+  target_link_human_indices: [4, 8, 12, 16, 20, 0]
+  add_dummy_free_joint: True
+  low_pass_alpha: 1
+  ignore_mimic_joint: False
