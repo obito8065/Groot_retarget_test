@@ -111,6 +111,10 @@ class BodyRetargeter:
         self._ik_last_solution = {}
         self._workspace_margin = 0.05
         self._ik_local_margin = np.deg2rad(90.0)
+
+        # 新增：保存上一帧的四元数（按env_idx分桶），用于轴角连续性约束
+        # 注意：为了避免轴角表示的符号跳变，我们存储四元数而不是轴角
+        self._last_axisangle = {}  # {env_idx: {'left': quat(4,), 'right': quat(4,)}}
         
         print("初始化完成。")
 
@@ -184,6 +188,78 @@ class BodyRetargeter:
             upper = q_max[i]
             fallback.append(float(max(min(val, upper), lower)))
         return fallback, reason
+    
+
+    # 新增：轴角连续性约束函数（使用四元数方法）
+    def _ensure_axisangle_continuity(self, 
+                                    current_axisangle: np.ndarray, 
+                                    env_idx: int, 
+                                    hand_label: str) -> np.ndarray:
+        """
+        确保轴角表示的连续性，避免等价表示之间的跳变。
+        
+        使用四元数方法确保连续性：四元数 q 和 -q 表示同一个旋转。
+        我们选择与上一帧四元数点积为正的那个表示，然后转回轴角。
+        
+        参数:
+            current_axisangle: 当前帧的轴角 (3,)
+            env_idx: 环境索引
+            hand_label: 'left' 或 'right'
+        
+        返回:
+            修正后的轴角
+        """
+        env_idx = int(env_idx)
+        
+        # 初始化该env的缓存（现在存储四元数而不是轴角）
+        if env_idx not in self._last_axisangle:
+            self._last_axisangle[env_idx] = {}
+        
+        # 将当前轴角转换为四元数 (w, x, y, z)
+        current_quat = R.from_rotvec(current_axisangle).as_quat()  # scipy格式: (x, y, z, w)
+        
+        # 如果没有历史记录，直接保存四元数并返回原轴角
+        if hand_label not in self._last_axisangle[env_idx]:
+            self._last_axisangle[env_idx][hand_label] = current_quat.copy()
+            return current_axisangle
+        
+        last_quat = self._last_axisangle[env_idx][hand_label]
+        
+        # 计算两个四元数的点积
+        # 四元数 q 和 -q 表示同一个旋转，我们选择点积为正的那个
+        quat_dot = np.dot(current_quat, last_quat)
+        
+        if quat_dot < 0:
+            # 如果点积为负，翻转四元数符号（这不改变表示的旋转）
+            current_quat = -current_quat
+            # 转回轴角
+            corrected_axisangle = R.from_quat(current_quat).as_rotvec()
+            print(f"  [{hand_label} hand, env={env_idx}] 检测到四元数符号跳变，已修正 (quat_dot={quat_dot:.3f})")
+        else:
+            corrected_axisangle = current_axisangle
+        
+        # 更新历史记录（存储修正后的四元数）
+        self._last_axisangle[env_idx][hand_label] = current_quat.copy()
+        
+        return corrected_axisangle
+
+    # 修改 reset_ik_cache 方法，同时清空四元数历史缓存
+    def reset_ik_cache(self, env_idx: Optional[int] = None):
+        """
+        清空 IK 历史缓存（last_solution）和四元数历史缓存（用于轴角连续性约束）。
+        
+        Args:
+            env_idx: 环境索引
+                - None: 清空所有环境的缓存
+                - int: 仅清空指定环境的缓存
+        """
+        if env_idx is None:
+            self._ik_last_solution.clear()
+            self._last_axisangle.clear()  # 清空四元数历史
+            return
+        env_idx = int(env_idx)
+        self._ik_last_solution.pop(env_idx, None)
+        self._last_axisangle.pop(env_idx, None)  # 清空指定env的四元数历史
 
 
     def process_kinematics_dataloader(self, action_vectors: np.ndarray) -> Tuple[Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray]]:
@@ -251,8 +327,16 @@ class BodyRetargeter:
             right_hand_rot_mat = T_cam_to_right_hand[:3, :3]
             
             # 使用 scipy 将旋转矩阵转换为轴角（rotvec）
-            left_hand_axisangles[i] = R.from_matrix(left_hand_rot_mat).as_rotvec()
-            right_hand_axisangles[i] = R.from_matrix(right_hand_rot_mat).as_rotvec()
+            left_hand_axisangle_raw = R.from_matrix(left_hand_rot_mat).as_rotvec()
+            right_hand_axisangle_raw = R.from_matrix(right_hand_rot_mat).as_rotvec()
+            
+            # ===【新增】对FK计算出的轴角应用连续性约束，防止正负跳变 ===
+            left_hand_axisangles[i] = self._ensure_axisangle_continuity(
+                left_hand_axisangle_raw, env_idx=i, hand_label='left'
+            )
+            right_hand_axisangles[i] = self._ensure_axisangle_continuity(
+                right_hand_axisangle_raw, env_idx=i, hand_label='right'
+            )
         
         # 如果输入是单个向量，则压缩批次维度
         if squeeze_output:
@@ -367,8 +451,16 @@ class BodyRetargeter:
             right_hand_rot = np.asarray(T_cam_to_right_hand[:3, :3], dtype=np.float64)
             
             # 将旋转矩阵转换为轴角（rotation vector）
-            left_hand_axisangles[i] = R.from_matrix(left_hand_rot).as_rotvec()
-            right_hand_axisangles[i] = R.from_matrix(right_hand_rot).as_rotvec()
+            left_hand_axisangle_raw = R.from_matrix(left_hand_rot).as_rotvec()
+            right_hand_axisangle_raw = R.from_matrix(right_hand_rot).as_rotvec()
+            
+            # ===【新增】对FK计算出的轴角应用连续性约束，防止正负跳变 ===
+            left_hand_axisangles[i] = self._ensure_axisangle_continuity(
+                left_hand_axisangle_raw, env_idx=i, hand_label='left'
+            )
+            right_hand_axisangles[i] = self._ensure_axisangle_continuity(
+                right_hand_axisangle_raw, env_idx=i, hand_label='right'
+            )
         
         # 如果输入是单个向量，则压缩批次维度
         if squeeze_output:
@@ -459,6 +551,16 @@ class BodyRetargeter:
             curr_left_axisangle = left_hand_axisangle[i]
             curr_right_pos = right_hand_pos[i]
             curr_right_axisangle = right_hand_axisangle[i]
+
+            # ===【新增】步骤0: 轴角连续性约束 ===
+            curr_left_axisangle = self._ensure_axisangle_continuity(
+                curr_left_axisangle, env_idx=i, hand_label='left'
+            )
+            curr_right_axisangle = self._ensure_axisangle_continuity(
+                curr_right_axisangle, env_idx=i, hand_label='right'
+            )
+            
+
             
             # === 步骤1: 将轴角表示转换为旋转矩阵，构建 4x4 变换矩阵 ===
             left_hand_rot = R.from_rotvec(curr_left_axisangle).as_matrix()

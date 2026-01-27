@@ -107,6 +107,7 @@ class SimulationConfig:
 
 
 
+
 class SimulationInferenceClient(BaseInferenceClient, BasePolicy):
     """Client for running simulations and communicating with the inference server."""
 
@@ -268,7 +269,10 @@ def _create_single_env(config: SimulationConfig, idx: int, seed_queue: mp.Queue)
     _seed_worker(int(config.episode_seed_start) + int(idx))
 
     # Create base environment
-    env = gym.make(config.env_name, enable_render=True) # 为False回导致视频无法录制
+    env = gym.make(config.env_name, 
+                    enable_render=True,
+              
+                    ) # 为False回导致视频无法录制
     # 拦截 reset，从队列取 seed
     env = ResetSeedFromQueueWrapper(env, seed_queue, env_idx=idx)
 

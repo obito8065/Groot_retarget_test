@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Union
 from dataclasses import dataclass, field
 import os
-
+import time
 
 import numpy as np
 import torch
@@ -190,8 +190,8 @@ class Gr00tPolicy(BasePolicy):
                 # Retarget 输入 keypoints 顺序: [wrist, thumb, index, middle, ring, pinky] (6, 3)
                 # Retarget 输出：
                 #   - wrist_pose: [wrist_xyz(3), rotvec(3)] = 6维
-                #   - finger_joints: [pinky, ring, middle, index, thumb_pitch, thumb_yaw] = 6维
-                # 注意: Retarget输出顺序与数据集格式完全一致，无需重排序！
+                #   - finger_joints: [pinky, ring, middle, index, thumb_pitch, thumb_yaw] = 6维 (6个主动关节)
+                # 注意: finger_joints为仿真所需的6个主动关节，不包含mimic关节
                 from gr00t.eval.fourier_hand_retarget_api import FourierHandRetargetAPI
                 self.fourier_hand_retargeter = FourierHandRetargetAPI()
                 print("✓ Initialized Fourier Hand Retargeter for Step 3 (output processing).")
@@ -237,14 +237,28 @@ class Gr00tPolicy(BasePolicy):
     
     def reset_ik_cache(self, env_idx: Optional[int] = None):
         """
-        清空 Robocasa/GR1 EEPose IK 的历史缓存。
-        env_idx=None 清空全部；否则只清对应并行 env slot。
+        清空 Robocasa/GR1 EEPose IK 的历史缓存，以及 Fourier Hand Retarget 的 last_qpos 缓存。
+        
+        在每个新 episode 开始时调用，用于重置：
+        1. Body IK 的 last_qpos 缓存（body_retargeter）
+        2. Fourier Hand Retarget 的 warmup 状态和 last_qpos（fourier_hand_retargeter）
+        
+        注意：
+        - FK（policy_fourier_hand_keypoints）是无状态的，不需要reset
+        - 只有IK和Retarget需要清空历史qpos缓存
+        
+        Args:
+            env_idx: 并行环境索引
+                - None: 清空所有环境的缓存
+                - int: 仅清空指定环境的缓存
         """
+        # 1. 重置 Body IK 缓存（用于 arm 的 IK，包含 last_qpos）
         if hasattr(self, "body_retargeter") and hasattr(self.body_retargeter, "reset_ik_cache"):
             self.body_retargeter.reset_ik_cache(env_idx)
         
-        # 同时清空 Fourier Hand Retarget 缓存
-        if hasattr(self, "fourier_hand_retargeter"):
+        # 2. 重置 Fourier Hand Retarget 缓存（用于 hand keypoints -> joint angles）
+        #    这会清空 warmup 状态和优化器的 last_qpos 历史
+        if hasattr(self, "fourier_hand_retargeter") and hasattr(self.fourier_hand_retargeter, "reset"):
             self.fourier_hand_retargeter.reset(env_idx)
 
     def get_action(self, observations: Dict[str, Any]) -> Dict[str, Any]:
@@ -308,7 +322,7 @@ class Gr00tPolicy(BasePolicy):
             --- Debugging 'obs' for Robocasa arm_qpos ---
             Key: 'annotation.human.coarse_action', Type: <class 'list'>
             Key: 'state.left_arm', Type: <class 'numpy.ndarray'>, Shape: (5, 1, 7), Dtype: float64
-            Key: 'state.left_hand', Type: <class 'numpy.ndarray'>, Shape: (5, 1, 6), Dtype: float64
+            Key: 'state.left_hand', Type: <class 'numpy.ndarray'>, Shape: (5, 1, 6), Dtype: float64，[pinky，ring，middle，index, thumb_pitch, thumb_yaw]
             Key: 'state.right_arm', Type: <class 'numpy.ndarray'>, Shape: (5, 1, 7), Dtype: float64
             Key: 'state.right_hand', Type: <class 'numpy.ndarray'>, Shape: (5, 1, 6), Dtype: float64
             Key: 'state.waist', Type: <class 'numpy.ndarray'>, Shape: (5, 1, 3), Dtype: float64
@@ -372,7 +386,7 @@ class Gr00tPolicy(BasePolicy):
         
 
 
-
+        # FK -> EEpose
         if self.use_eepose:
             if "robocasa" in self.embodiment_tag.value:
                 # 1. 使用 BodyRetargeter 将 EEpose 转换为标准状态表示
@@ -447,33 +461,96 @@ class Gr00tPolicy(BasePolicy):
                     
                     print(f"[Policy Step1] Input shapes: left_arm={left_arm_orig.shape}, left_hand={left_hand_orig.shape}")
                     
-                    # 重排序finger joints: 数据集格式 -> FK期望格式
-                    # 数据集格式: [pinky(0), ring(1), middle(2), index(3), thumb_pitch(4), thumb_yaw(5)]
-                    # FK期望格式: [index(0), middle(1), ring(2), pinky(3), thumb_yaw(4), thumb_pitch(5)]
-                    dataset_to_fk_mapping = [3, 2, 1, 0, 5, 4]
-                    left_hand_fk = left_hand_orig[..., dataset_to_fk_mapping]
-                    right_hand_fk = right_hand_orig[..., dataset_to_fk_mapping]
+                    # ==========================================================
+                    # 调试功能：保存原始观测数据到txt文件（用于可视化投影）
+                    # ==========================================================
+                    if not hasattr(self, '_observation_log_initialized'):
+                        from datetime import datetime
+                        import os
+                        
+                        # 创建日志文件
+                        log_dir = Path("/vla/users/lijiayi/code/groot_retarget/output_video_record")
+                        log_dir.mkdir(parents=True, exist_ok=True)
+                        
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        self._observation_log_file = log_dir / f"observation_wrist_{timestamp}.txt"
+                        self._observation_frame_counter = 0
+                        
+                        # 写入文件头
+                        with open(self._observation_log_file, 'w') as f:
+                            f.write("# 原始观测数据：左右手腕位姿和手指关节\n")
+                            f.write("# 格式：frame_id t L_wrist_x L_wrist_y L_wrist_z L_wrist_rotvec_x L_wrist_rotvec_y L_wrist_rotvec_z L_finger0 L_finger1 L_finger2 L_finger3 L_finger4 L_finger5 R_wrist_x R_wrist_y R_wrist_z R_wrist_rotvec_x R_wrist_rotvec_y R_wrist_rotvec_z R_finger0 R_finger1 R_finger2 R_finger3 R_finger4 R_finger5\n")
+                            f.write("# 左手：wrist_xyz(3) + wrist_rotvec(3) + finger_joints(6)\n")
+                            f.write("# 右手：wrist_xyz(3) + wrist_rotvec(3) + finger_joints(6)\n")
+                            f.write("# 手指关节顺序（仿真格式）：[pinky, ring, middle, index, thumb_pitch, thumb_yaw]\n")
+                            f.write("# batch=0的数据，每个时间步(t=0~T)记录一行\n")
+                            f.write("#\n")
+                        
+                        self._observation_log_initialized = True
+                        print(f"[Observation Logger] 创建日志文件: {self._observation_log_file}")
                     
+                    # 记录原始观测数据到文件（只保存batch=0的数据）
+                    if hasattr(self, '_observation_log_file'):
+                        try:
+                            with open(self._observation_log_file, 'a') as f:
+                                # 遍历时间步（T维度）
+                                for t in range(T):
+                                    # 提取batch=0的数据
+                                    left_arm_t = left_arm_orig[0, t, :]      # (6,) = [wrist_xyz, wrist_rotvec]
+                                    right_arm_t = right_arm_orig[0, t, :]    # (6,)
+                                    left_hand_t = left_hand_orig[0, t, :]    # (6,) = finger joints
+                                    right_hand_t = right_hand_orig[0, t, :]  # (6,)
+                                    
+                                    # 拼接成一行：frame_id, t, left_arm(6), left_hand(6), right_arm(6), right_hand(6)
+                                    # 总共：2 + 6 + 6 + 6 + 6 = 26 个值
+                                    line_data = [self._observation_frame_counter, t]
+                                    line_data.extend(left_arm_t.tolist())
+                                    line_data.extend(left_hand_t.tolist())
+                                    line_data.extend(right_arm_t.tolist())
+                                    line_data.extend(right_hand_t.tolist())
+                                    
+                                    # 写入文件
+                                    line = ' '.join(f'{v:.6f}' for v in line_data)
+                                    f.write(line + '\n')
+                            
+                            self._observation_frame_counter += 1
+                            
+                        except Exception as e:
+                            print(f"[Observation Logger] 写入日志失败: {e}")
+                    # ==========================================================
+                    
+                    # 数据集格式和FK期望格式一致，不需要重排序
+                    # Robocasa数据集: [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
+                    # FK期望:        [index, middle, ring, pinky, thumb_yaw, thumb_pitch]
+                    # 只交换最后两个维度
+                    left_hand_fk = left_hand_orig[..., [3, 2, 1, 0, 5, 4]]
+                    right_hand_fk = right_hand_orig[..., [3, 2, 1, 0, 5, 4]]
+                                        
                     # 执行 FK 计算
                     # 输入：
                     #   - left_arm_orig: (B, T, 6) = [wrist_xyz(3), rotvec(3)]
                     #   - left_hand_fk: (B, T, 6) = [index, middle, ring, pinky, thumb_yaw, thumb_pitch]
+                    #   - waist: (B, T, 3) = 腰部位置（用0填充）
                     # 输出：
-                    #   - left_keypoints: (B, T, 6, 3) = 6个关键点的xyz坐标
-                    #     顺序: [wrist, thumb_tip, index_tip, middle_tip, ring_tip, pinky_tip]
-                    left_keypoints, right_keypoints = self.policy_fourier_hand_keypoints.compute_keypoints(
+                    #   - state_45d: (B, T, 45) = [left_21d, right_21d, waist_3d]
+                    waist = np.zeros((B, T, 3), dtype=np.float32)
+                    state_45d = self.policy_fourier_hand_keypoints.compute_state_45d(
                         left_arm=left_arm_orig,
                         left_hand=left_hand_fk,
                         right_arm=right_arm_orig,
                         right_hand=right_hand_fk,
-                        time_major=False,
-                        return_time_major=False,
+                        waist=waist,
                     )
                     
-                    # Flatten keypoints: (B, T, 6, 3) -> (B, T, 18)
-                    # 顺序: [wrist_xyz(3), thumb_tip_xyz(3), index_tip_xyz(3), middle_tip_xyz(3), ring_tip_xyz(3), pinky_tip_xyz(3)]
-                    obs_copy["state.left_key_points"] = left_keypoints.reshape(B, T, 18)
-                    obs_copy["state.right_key_points"] = right_keypoints.reshape(B, T, 18)
+                    # 从45维中提取完整的21维关键点：
+                    # 输入对齐数据集输入：wrist_xyz, thumb_tip_xyz, index_tip_xyz, middle_tip_xyz, ring_tip_xyz, pinky_tip_xyz, wrist_rotvec
+                    # [0:21] = left: wrist_xyz(3) + 5tips_xyz(15) + wrist_rotvec(3)
+                    # [21:42] = right: wrist_xyz(3) + 5tips_xyz(15) + wrist_rotvec(3)
+                    left_keypoints_21d = state_45d[..., 0:21]    # (B, T, 21)
+                    right_keypoints_21d = state_45d[..., 21:42]  # (B, T, 21)
+                    
+                    obs_copy["state.left_key_points"] = left_keypoints_21d
+                    obs_copy["state.right_key_points"] = right_keypoints_21d
                     
                     print(f"[Policy Step1] Converted to keypoints:")
                     print(f"  left_key_points: {obs_copy['state.left_key_points'].shape}")
@@ -489,57 +566,7 @@ class Gr00tPolicy(BasePolicy):
                     obs_copy.pop("state.right_arm", None)
                     obs_copy.pop("state.right_hand", None)
         
-        # ==========================================================
-        # Fourier Hand FK: joint angles -> 6 keypoints (输入处理)
-        # 这部分是为了训练时使用的，如果模型本身就期望 joint angles 作为输入
-        # ==========================================================
-        # 关节顺序对齐说明:
-        # - 数据集/仿真 state.left_hand 格式: [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
-        # - FK 输入期望格式: [index, middle, ring, pinky, thumb_yaw, thumb_pitch]
-        # - 重排序映射: dataset_to_fk_mapping = [3, 2, 1, 0, 5, 4]
-        # - FK 输出 keypoints 顺序: [wrist, thumb, index, middle, ring, pinky] 共6个点, 每个(x,y,z)
-        # - 模型输入: reshape成 (B, T, 18) 的 flat 向量
-        if self.use_fourier_hand_retarget and "robocasa" in self.embodiment_tag.value:
-            # 1. 保存原始 hand joint angles (用于后续对比或备用)
-            left_hand_orig = obs_copy.get("state.left_hand", None)
-            right_hand_orig = obs_copy.get("state.right_hand", None)
-            left_arm_orig = obs_copy.get("state.left_arm", None)
-            right_arm_orig = obs_copy.get("state.right_arm", None)
-            
-            if left_hand_orig is not None and right_hand_orig is not None:
-                # 获取形状信息
-                B, T, D_hand = left_hand_orig.shape
-                
-                # 2. 重排序: 数据集格式 -> FK期望格式
-                # 数据集: [pinky(0), ring(1), middle(2), index(3), thumb_pitch(4), thumb_yaw(5)]
-                # FK期望: [index(0), middle(1), ring(2), pinky(3), thumb_yaw(4), thumb_pitch(5)]
-                dataset_to_fk_mapping = [3, 2, 1, 0, 5, 4]
-                left_hand_fk = left_hand_orig[..., dataset_to_fk_mapping]
-                right_hand_fk = right_hand_orig[..., dataset_to_fk_mapping]
-                
-                # 3. 检查 arm state (需要是 wrist_pose 格式: pos3 + rotvec3)
-                # state.left_arm 预期格式: (B, T, >=6), 前6维是 [pos_x, pos_y, pos_z, rotvec_x, rotvec_y, rotvec_z]
-                if left_arm_orig is not None and right_arm_orig is not None:
-                    # 4. 执行 FK 计算
-                    # 输入: left_arm (B,T,>=6), left_hand_fk (B,T,6)
-                    # 输出: (B,T,6,3) 关键点坐标, 顺序 [wrist, thumb, index, middle, ring, pinky]
-                    left_keypoints, right_keypoints = self.policy_fourier_hand_keypoints.compute_keypoints(
-                        left_arm=left_arm_orig,
-                        left_hand=left_hand_fk,
-                        right_arm=right_arm_orig,
-                        right_hand=right_hand_fk,
-                        time_major=False,  # 输入是 (B, T, D) 格式
-                        return_time_major=False,
-                    )
-                    
-                    # 5. Flatten 并替换 obs: (B, T, 6, 3) -> (B, T, 18)
-                    # 模型输入顺序: [wrist_xyz, thumb_xyz, index_xyz, middle_xyz, ring_xyz, pinky_xyz]
-                    obs_copy["state.left_hand"] = left_keypoints.reshape(B, T, 18)
-                    obs_copy["state.right_hand"] = right_keypoints.reshape(B, T, 18)
-                    
-                    # print(f"[Fourier Hand FK] Converted hand joints to keypoints:")
-                    # print(f"  left_hand: {left_hand_orig.shape} -> {obs_copy['state.left_hand'].shape}")
-                    # print(f"  right_hand: {right_hand_orig.shape} -> {obs_copy['state.right_hand'].shape}")
+        
 
         # ==========================================================
         # 第2步：模型推理
@@ -566,26 +593,7 @@ class Gr00tPolicy(BasePolicy):
         # Unapply transforms (denormalization, etc.)
         unnormalized_action = self._get_unnormalized_action(normalized_action)
         
-        # print("\n --- Gr00tPolicy Debug Info ---")
-        # for key , value in unnormalized_action.items():
-        #     print(f"Action: {key}: {value.shape}")
-        # print(" --- End of Debug Info --- \n")
-        
-        """
-        Robocasa: 
-            Action: action.left_arm: (5, 16, 7)
-            Action: action.right_arm: (5, 16, 7)
-            Action: action.left_hand: (5, 16, 6)
-            Action: action.right_hand: (5, 16, 6)
-            Action: action.waist: (5, 16, 3)
-            
-        Robotwin:
-            Action: action.left_arm: (1, 16, 6)
-            Action: action.right_arm: (1, 16, 6)
-            Action: action.left_gripper: (1, 16, 1)
-            Action: action.right_gripper: (1, 16, 1)
 
-        """
 
         if not is_batch and "robocasa" in self.embodiment_tag.value:
             unnormalized_action = squeeze_dict_values(unnormalized_action) # 因为robocasa支持并行环境评测，而robotwin不支持并行环境评测
@@ -629,7 +637,7 @@ class Gr00tPolicy(BasePolicy):
                 # 写入文件头
                 with open(self._keypoints_log_file, 'w') as f:
                     f.write("# 模型预测的手部关键点坐标\n")
-                    f.write("# 格式：frame_id t L_wrist_x L_wrist_y L_wrist_z L_thumb_tip_x L_thumb_tip_y L_thumb_tip_z L_index_tip_x L_index_tip_y L_index_tip_z L_middle_tip_x L_middle_tip_y L_middle_tip_z L_ring_tip_x L_ring_tip_y L_ring_tip_z L_pinky_tip_x L_pinky_tip_y L_pinky_tip_z R_wrist_x R_wrist_y R_wrist_z R_thumb_tip_x R_thumb_tip_y R_thumb_tip_z R_index_tip_x R_index_tip_y R_index_tip_z R_middle_tip_x R_middle_tip_y R_middle_tip_z R_ring_tip_x R_ring_tip_y R_ring_tip_z R_pinky_tip_x R_pinky_tip_y R_pinky_tip_z\n")
+                    f.write("# 格式：frame_id t L_wrist_x L_wrist_y L_wrist_z L_thumb_tip_x L_thumb_tip_y L_thumb_tip_z L_index_tip_x L_index_tip_y L_index_tip_z L_middle_tip_x L_middle_tip_y L_middle_tip_z L_ring_tip_x L_ring_tip_y L_ring_tip_z L_pinky_tip_x L_pinky_tip_y L_pinky_tip_z L_wrist_rotvec_x L_wrist_rotvec_y L_wrist_rotvec_z R_wrist_x R_wrist_y R_wrist_z R_thumb_tip_x R_thumb_tip_y R_thumb_tip_z R_index_tip_x R_index_tip_y R_index_tip_z R_middle_tip_x R_middle_tip_y R_middle_tip_z R_ring_tip_x R_ring_tip_y R_ring_tip_z R_pinky_tip_x R_pinky_tip_y R_pinky_tip_z R_wrist_rotvec_x R_wrist_rotvec_y R_wrist_rotvec_z\n")
                     f.write("# 左手6个关键点: 手腕(L_hand_base_link) + 5个指尖(thumb/index/middle/ring/pinky)\n")
                     f.write("# 右手6个关键点: 手腕(R_hand_base_link) + 5个指尖(thumb/index/middle/ring/pinky)\n")
                     f.write("# batch=0的数据，每个时间步(t=0~15)记录一行\n")
@@ -659,13 +667,13 @@ class Gr00tPolicy(BasePolicy):
                             # 遍历时间步（horizon维度）
                             for t in range(horizon):
                                 # 提取batch=0的数据
-                                left_kp = pred_left_keypoints_seq[0, t, :]  # (18,)
-                                right_kp = pred_right_keypoints_seq[0, t, :] # (18,)
+                                left_kp = pred_left_keypoints_seq[0, t, :]  # (D_kp,) =  21
+                                right_kp = pred_right_keypoints_seq[0, t, :] # (D_kp,)
                                 
-                                # 拼接左右手关键点：[left_18维, right_18维] = 36维
-                                full_kp = np.concatenate([left_kp, right_kp])  # (36,)
+                                # 拼接左右手关键点
+                                full_kp = np.concatenate([left_kp, right_kp])
                                 
-                                # 写入一行：frame_id t 36个坐标值
+                                # 写入一行：frame_id t D_kp*2个坐标值
                                 line = f"{self._keypoints_frame_counter} {t}"
                                 for val in full_kp:
                                     line += f" {val:.6f}"
@@ -681,8 +689,8 @@ class Gr00tPolicy(BasePolicy):
                         print(f"[Keypoints Logger] 保存失败: {e}")
                 # ==========================================================
                 
-                # 检查维度是否是 18 (6 keypoints * 3 coordinates)
-                if D_kp == 18:
+                # 检查维度：支持 21维（新格式，包含wrist_rotvec）
+                if D_kp == 21:
                     # 初始化存储结果的数组
                     # 输出格式：
                     #   - arm: (B, horizon, 6) = [wrist_xyz(3), rotvec(3)]
@@ -695,28 +703,22 @@ class Gr00tPolicy(BasePolicy):
                     # 逐帧进行retarget转换
                     for t in range(horizon):
                         for b in range(batch_size):
-                            # Reshape: (18,) -> (6, 3)
-                            # 顺序: [wrist, thumb_tip, index_tip, middle_tip, ring_tip, pinky_tip]
-                            left_kp_t = pred_left_keypoints_seq[b, t, :].reshape(6, 3)
-                            right_kp_t = pred_right_keypoints_seq[b, t, :].reshape(6, 3)
                             
-                            # 调用retarget API
-                            # 输入：
-                            #   - left_keypoints: (6, 3) = [wrist, thumb_tip, index_tip, middle_tip, ring_tip, pinky_tip]
-                            # 输出：
-                            #   - result['left']['wrist_pose']: (6,) = [wrist_xyz(3), rotvec(3)]
-                            #   - result['left']['finger_joints']: (6,) = [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
-                            result = self.fourier_hand_retargeter.retarget(
-                                left_keypoints=left_kp_t,
-                                right_keypoints=right_kp_t
-                            )
+                            # 新格式：使用完整的45维（left_21 + right_21 + waist_3）
+                            # 这样可以利用wrist_rotvec进行warmup
+                            left_21 = pred_left_keypoints_seq[b, t, :]   # (21,)
+                            right_21 = pred_right_keypoints_seq[b, t, :] # (21,)
+                            waist_3 = np.zeros(3, dtype=np.float32)       # 占位
+                            state_45d = np.concatenate([left_21, right_21, waist_3])  # (45,)
                             
+                            # 调用新的retarget API（支持warmup）
+                            result = self.fourier_hand_retargeter.retarget_from_45d(state_45d)
+                        
                             # 提取左手的wrist pose和finger joints
                             if 'left' in result:
                                 # wrist_pose: [wrist_xyz(3), rotvec(3)] = 6维
                                 retarget_left_arm_seq[b, t] = result['left']['wrist_pose']
-                                # finger_joints: [pinky, ring, middle, index, thumb_pitch, thumb_yaw] = 6维
-                                # 已经是数据集格式，无需重排序
+                                # finger_joints: [pinky, ring, middle, index, thumb_pitch, thumb_yaw] = 6维 (6个主动关节)
                                 retarget_left_hand_seq[b, t] = result['left']['finger_joints']
                             
                             # 提取右手的wrist pose和finger joints
@@ -727,13 +729,90 @@ class Gr00tPolicy(BasePolicy):
                     # 将转换后的结果赋值到action字典中
                     # 输出格式：
                     #   - action.left_arm: (B, horizon, 6) = [L_wrist_xyz(3), L_rotvec(3)]
-                    #   - action.left_hand: (B, horizon, 6) = [L_finger_q1~6] (数据集格式)
+                    #   - action.left_hand: (B, horizon, 6) = [L_finger_q1~6] pinky, ring, middle, index, thumb_pitch, thumb_yaw]
                     #   - action.right_arm: (B, horizon, 6) = [R_wrist_xyz(3), R_rotvec(3)]
                     #   - action.right_hand: (B, horizon, 6) = [R_finger_q1~6] (数据集格式)
+
+                    # 重排序finger joints: Retarget API输出格式 -> RoboCasa数据集格式
+                    # API输出格式: [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
+                    # 数据集格式: [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
+                    
                     unnormalized_action["action.left_arm"] = retarget_left_arm_seq
-                    unnormalized_action["action.left_hand"] = retarget_left_hand_seq
+                    # 只有索引0,1,2,3,5需要取负号，索引4(thumb_pitch)不需要
+                    left_hand_processed = retarget_left_hand_seq.copy()
+                    left_hand_processed[..., [0, 1, 2, 3, 5]] = -left_hand_processed[..., [0, 1, 2, 3, 5]]
+                    unnormalized_action["action.left_hand"] = left_hand_processed # [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
+                    
                     unnormalized_action["action.right_arm"] = retarget_right_arm_seq
-                    unnormalized_action["action.right_hand"] = retarget_right_hand_seq
+                    right_hand_processed = retarget_right_hand_seq.copy()
+                    right_hand_processed[..., [0, 1, 2, 3, 5]] = -right_hand_processed[..., [0, 1, 2, 3, 5]]
+                    unnormalized_action["action.right_hand"] = right_hand_processed # 直接使用Retarget API的输出 [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
+                    # ==========================================================
+                    # 调试功能：保存每个chunk中每个时间步的retarget输出（wrist pose + finger joints）
+                    # ==========================================================
+                    if not hasattr(self, '_retarget_log_initialized'):
+                        from datetime import datetime
+                        
+                        # 创建日志文件
+                        log_dir = Path("/vla/users/lijiayi/code/groot_retarget/output_video_record")
+                        log_dir.mkdir(parents=True, exist_ok=True)
+                        
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        self._retarget_log_file = log_dir / f"retargeted_actions_{timestamp}.txt"
+                        self._retarget_chunk_counter = 0
+                        
+                        # 写入文件头
+                        with open(self._retarget_log_file, 'w') as f:
+                            f.write("# Retarget后的动作输出（每个chunk的每个时间步）\n")
+                            f.write("# 格式：chunk_id t L_wrist_x L_wrist_y L_wrist_z L_rotvec_x L_rotvec_y L_rotvec_z L_finger_q1 L_finger_q2 L_finger_q3 L_finger_q4 L_finger_q5 L_finger_q6 R_wrist_x R_wrist_y R_wrist_z R_rotvec_x R_rotvec_y R_rotvec_z R_finger_q1 R_finger_q2 R_finger_q3 R_finger_q4 R_finger_q5 R_finger_q6\n")
+                            f.write("# L_finger_joint_names_6: pinky, ring, middle, index, thumb_pitch, thumb_yaw]\n")
+                            f.write("# batch=0的数据，每个chunk的16个时间步(t=0~15)各记录一行\n")
+                            f.write("#\n")
+                        
+                        self._retarget_log_initialized = True
+                        print(f"[Retarget Logger] 创建日志文件: {self._retarget_log_file}")
+                    
+                    # 保存当前chunk的retarget数据（只保存batch=0）
+                    if hasattr(self, '_retarget_log_file'):
+                        try:
+                            # API已返回正确顺序的finger joints: [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
+                            # 可直接用于仿真控制
+                            
+                            with open(self._retarget_log_file, 'a') as f:
+                                # 遍历当前chunk的所有时间步（horizon维度，通常16步）
+                                for t in range(horizon):
+                                    # 提取batch=0的数据
+                                    left_wrist_pose = retarget_left_arm_seq[0, t, :]     # (6,) = [wrist_xyz(3), rotvec(3)]
+                                    left_finger_joints = retarget_left_hand_seq[0, t, :] # (6,) = [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
+                                    right_wrist_pose = retarget_right_arm_seq[0, t, :]   # (6,)
+                                    right_finger_joints = retarget_right_hand_seq[0, t, :] # (6,) 
+                                    
+                                    # 拼接完整动作：[left_wrist(6), left_finger(6), right_wrist(6), right_finger(6)] = 24维
+                                    full_action = np.concatenate([
+                                        left_wrist_pose,        # L_wrist_xyz + L_rotvec
+                                        left_finger_joints,     # L_finger_q1~6: [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
+                                        right_wrist_pose,       # R_wrist_xyz + R_rotvec
+                                        right_finger_joints     # R_finger_q1~6: [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
+                                    ])
+                                    
+                                    # 写入一行：chunk_id t 24个数值
+                                    line = f"{self._retarget_chunk_counter} {t}"
+                                    for val in full_action:
+                                        line += f" {val:.6f}"
+                                    line += "\n"
+                                    f.write(line)
+                            
+                            self._retarget_chunk_counter += 1
+                            
+                            # 每10个chunk打印一次进度
+                            if self._retarget_chunk_counter % 10 == 0:
+                                print(f"[Retarget Logger] 已保存 {self._retarget_chunk_counter} 个chunk数据 (共 {self._retarget_chunk_counter * horizon} 个时间步)")
+                        except Exception as e:
+                            print(f"[Retarget Logger] 保存失败: {e}")
+                            import traceback
+                            traceback.print_exc()
+                    # ==========================================================
+                    
                     
                     # 移除keypoints数据（客户端不需要）
                     unnormalized_action.pop("action.left_key_points", None)
@@ -745,63 +824,9 @@ class Gr00tPolicy(BasePolicy):
                     print(f"  right_arm (wrist pose): (B={batch_size}, H={horizon}, 6)")
                     print(f"  right_hand (finger joints): (B={batch_size}, H={horizon}, 6)")
                 else:
-                    print(f"[Policy Step3] Warning: action.left_key_points dim={D_kp}, expected 18. Skipping retarget.")
+                    print(f"[Policy Step3] Warning: action.left_key_points dim={D_kp}, expected 21. Skipping retarget.")
         
-        # ==========================================================
-        # Fourier Hand Retarget: 6 keypoints -> joint angles (输出处理)
-        # 这部分是为了只使用use_fourier_hand_retarget（不使用use_eepose）时使用的
-        # 注意：如果同时使用use_eepose和use_fourier_hand_retarget，则由Step 3处理，这里跳过
-        # ==========================================================
-        # 关节顺序对齐说明:
-        # - 模型输出 action.left_hand: (B, horizon, 18), 即 6 个关键点 flatten
-        # - 需要 reshape 成 (6, 3), 顺序: [wrist, thumb, index, middle, ring, pinky]
-        # - Retarget 输出 finger_joints 顺序: [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
-        # - 重要: Retarget 输出顺序与数据集格式完全一致，无需重排序！
-        if self.use_fourier_hand_retarget and not self.use_eepose and "robocasa" in self.embodiment_tag.value:
-            pred_left_hand_seq = unnormalized_action.get("action.left_hand", None)
-            pred_right_hand_seq = unnormalized_action.get("action.right_hand", None)
-            
-            if pred_left_hand_seq is not None and pred_right_hand_seq is not None:
-                batch_size, horizon, D_hand = pred_left_hand_seq.shape
-                
-                # 检查维度是否是 18 (6 keypoints * 3 coordinates)
-                if D_hand == 18:
-                    # 初始化存储 retarget 结果的数组
-                    # 输出顺序: [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
-                    retarget_left_hand_seq = np.zeros((batch_size, horizon, 6), dtype=np.float32)
-                    retarget_right_hand_seq = np.zeros((batch_size, horizon, 6), dtype=np.float32)
-                    
-                    # 逐帧进行 retarget
-                    for b in range(batch_size):
-                        for t in range(horizon):
-                            # Reshape: (18,) -> (6, 3)
-                            # 顺序: [wrist, thumb, index, middle, ring, pinky]
-                            left_kp_t = pred_left_hand_seq[b, t].reshape(6, 3)
-                            right_kp_t = pred_right_hand_seq[b, t].reshape(6, 3)
-                            
-                            # 执行 Retarget
-                            result = self.fourier_hand_retargeter.retarget(
-                                left_keypoints=left_kp_t,
-                                right_keypoints=right_kp_t
-                            )
-                            
-                            # 提取 finger joints (顺序已正确，直接使用)
-                            # Retarget 输出: [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
-                            # 与数据集格式一致，无需重排序
-                            if 'left' in result:
-                                retarget_left_hand_seq[b, t] = result['left']['finger_joints']
-                            if 'right' in result:
-                                retarget_right_hand_seq[b, t] = result['right']['finger_joints']
-                    
-                    # 更新 action 字典
-                    unnormalized_action["action.left_hand"] = retarget_left_hand_seq
-                    unnormalized_action["action.right_hand"] = retarget_right_hand_seq
-                    
-                    # print(f"[Fourier Hand Retarget] Converted keypoints to hand joints:")
-                    # print(f"  left_hand: (B={batch_size}, H={horizon}, 18) -> (B, H, 6)")
-                    # print(f"  right_hand: (B={batch_size}, H={horizon}, 18) -> (B, H, 6)")
-                else:
-                    print(f"Warning: action.left_hand dim={D_hand}, expected 18. Skipping retarget.")
+       
 
         # ==========================================================
         # 第4步（可选）：use_eepose的IK处理 - 将wrist pose转换为arm joint angles
@@ -828,6 +853,10 @@ class Gr00tPolicy(BasePolicy):
                 # 初始化用于存储IK结果的数组
                 q_left_arm_seq = np.zeros((batch_size, horizon, 7)) # 目标是7-DoF
                 q_right_arm_seq = np.zeros((batch_size, horizon, 7)) # 目标是7-DoF
+                
+                # 初始化用于存储时间戳的数组（每个时间步的输入和输出时间戳）
+                ik_timestamps_input = []   # 存储每个时间步的IK输入时间戳
+                ik_timestamps_output = []  # 存储每个时间步的IK输出时间戳
 
                 # 使用输入时的原始7-DoF手臂状态作为第一个时间步的IK初始猜测
                 # 形状从 (B, 1, 7) 变为 (B, 7)
@@ -836,6 +865,9 @@ class Gr00tPolicy(BasePolicy):
 
                 # 遍历动作序列的每一个时间步 (从 0 到 15)
                 for t in range(horizon):
+                    # 记录IK输入时间戳（在获取输入数据时）
+                    timestamp_input = time.time()
+                    
                     # 提取当前时间步 t 的EE Pose动作，形状为 (B, 6)
                     left_eepose_t = pred_left_eepose_seq[:, t, :]
                     right_eepose_t = pred_right_eepose_seq[:, t, :]
@@ -857,12 +889,19 @@ class Gr00tPolicy(BasePolicy):
                         q_init_left=q_init_left,
                         q_init_right=q_init_right
                     )
+                    
+                    # 记录IK输出时间戳（在IK计算完成后）
+                    timestamp_output = time.time()
 
                     # 将计算出的关节角存储到结果序列中
                     if q_left_arm_t is not None:
                         q_left_arm_seq[:, t, :] = q_left_arm_t
                     if q_right_arm_t is not None:
                         q_right_arm_seq[:, t, :] = q_right_arm_t
+                    
+                    # 存储时间戳
+                    ik_timestamps_input.append(timestamp_input)
+                    ik_timestamps_output.append(timestamp_output)
                     
                     # 使用当前步的IK解作为下一步的初始猜测，以保证动作的连续性
                     q_init_left = q_left_arm_t
@@ -873,28 +912,6 @@ class Gr00tPolicy(BasePolicy):
                     right_arm = q_right_arm_seq[batch_idx, t, :]  # shape: (6,)
                     left_arm = q_left_arm_seq[batch_idx, t, :]    # shape: (6,)
                     
-                    # # 打印robocasa的输出
-                    # if "action.right_hand" in unnormalized_action:
-                    #     right_hand = unnormalized_action["action.right_hand"][batch_idx, t, :]
-                    #     left_hand = unnormalized_action["action.left_hand"][batch_idx, t, :]
-                    #     # 按照data_config顺序拼接：right_arm + right_hand + left_arm + left_hand
-                    #     concatenated = np.concatenate([right_arm, right_hand, left_arm, left_hand])
-                    #     print(f"[Chunk {t}] right_arm={right_arm.tolist()} right_hand={right_hand.tolist()} "
-                    #           f"left_arm={left_arm.tolist()} left_hand={left_hand.tolist()} "
-                    #           f"concatenated={concatenated.tolist()}", flush=True)
-                    # elif "action.right_gripper" in unnormalized_action:
-                    #     right_gripper = unnormalized_action["action.right_gripper"][batch_idx, t, :]
-                    #     left_gripper = unnormalized_action["action.left_gripper"][batch_idx, t, :]
-                    #     # 按照data_config顺序拼接：right_arm + right_gripper + left_arm + left_gripper
-                    #     concatenated = np.concatenate([right_arm, right_gripper, left_arm, left_gripper])
-                    #     print(f"[Chunk {t}] right_arm={right_arm.tolist()} right_gripper={right_gripper.tolist()} "
-                    #           f"left_arm={left_arm.tolist()} left_gripper={left_gripper.tolist()} "
-                    #           f"concatenated={concatenated.tolist()}", flush=True)
-                    # else:
-                    #     # 如果没有hand/gripper，只打印arm
-                    #     concatenated = np.concatenate([right_arm, left_arm])
-                    #     print(f"[Chunk {t}] right_arm={right_arm.tolist()} left_arm={left_arm.tolist()} "
-                    #           f"concatenated={concatenated.tolist()}", flush=True)
 
                 # 将完整的关节角序列更新回 unnormalized_action 字典
                 unnormalized_action["action.left_arm"] = q_left_arm_seq
@@ -956,14 +973,102 @@ class Gr00tPolicy(BasePolicy):
                     q_init_left = q_left_arm_t
                     q_init_right = q_right_arm_t
                     
-                    
-
-
-
                 # 将完整的关节角序列更新回 unnormalized_action 字典
                 unnormalized_action["action.left_arm"] = q_left_arm_seq
                 unnormalized_action["action.right_arm"] = q_right_arm_seq
                 # Unnormalized Action: Left Arm shape: (1, 16, 6), Right Arm shape: (1, 16, 6)
+
+            
+
+            # ==========================================================
+            # 新增功能：保存IK输入和输出到robocasa_action日志
+            # 用于分析轴角跳变是在IK前还是IK后产生的
+            # ==========================================================
+            if "robocasa" in self.embodiment_tag.value:
+                if not hasattr(self, '_robocasa_action_log_initialized'):
+                    from datetime import datetime
+                    
+                    # 创建日志文件
+                    log_dir = Path("/vla/users/lijiayi/code/groot_retarget/output_video_record")
+                    log_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    self._robocasa_action_log_file = log_dir / f"robocasa_action_{timestamp}.txt"
+                    self._robocasa_action_chunk_counter = 0
+                    
+                    # 写入文件头
+                    with open(self._robocasa_action_log_file, 'w') as f:
+                        f.write("# RoboCasa IK输入和输出数据（每个chunk的每个时间步）\n")
+                        f.write("# 格式：chunk_id t timestamp_input timestamp_output ")
+                        f.write("L_IK_input_pos_x L_IK_input_pos_y L_IK_input_pos_z L_IK_input_rotvec_x L_IK_input_rotvec_y L_IK_input_rotvec_z ")  # IK输入：wrist pose (6)
+                        f.write("L_IK_output_q1 L_IK_output_q2 L_IK_output_q3 L_IK_output_q4 L_IK_output_q5 L_IK_output_q6 L_IK_output_q7 ")  # IK输出：arm joints (7)
+                        f.write("R_IK_input_pos_x R_IK_input_pos_y R_IK_input_pos_z R_IK_input_rotvec_x R_IK_input_rotvec_y R_IK_input_rotvec_z ")  # IK输入：wrist pose (6)
+                        f.write("R_IK_output_q1 R_IK_output_q2 R_IK_output_q3 R_IK_output_q4 R_IK_output_q5 R_IK_output_q6 R_IK_output_q7 ")  # IK输出：arm joints (7)
+                        f.write("L_finger_q1 L_finger_q2 L_finger_q3 L_finger_q4 L_finger_q5 L_finger_q6 ")  # finger joints (6)
+                        f.write("R_finger_q1 R_finger_q2 R_finger_q3 R_finger_q4 R_finger_q5 R_finger_q6 ")  # finger joints (6)
+                        f.write("waist_q1 waist_q2 waist_q3\n")  # waist (3)
+                        f.write("# timestamp_input: IK输入时的真实时间戳（time.time()），用于分析IK前的轴角跳变\n")
+                        f.write("# timestamp_output: IK输出时的真实时间戳（time.time()），用于分析IK后的关节角度跳变\n")
+                        f.write("# IK输入：wrist pose = [wrist_xyz(3), rotvec(3)] - 用于分析IK前的轴角跳变\n")
+                        f.write("# IK输出：arm joint angles (7) - 用于分析IK后的关节角度\n")
+                        f.write("# L_finger_joint_names_6: pinky, ring, middle, index, thumb_pitch, thumb_yaw]\n")
+                        f.write("# batch=0的数据，每个chunk的16个时间步(t=0~15)各记录一行\n")
+                        f.write("#\n")
+                    
+                    self._robocasa_action_log_initialized = True
+                    print(f"[RoboCasa Action Logger] 创建日志文件: {self._robocasa_action_log_file}")
+                
+                # 保存当前chunk的IK输入和输出数据（只保存batch=0）
+                if hasattr(self, '_robocasa_action_log_file'):
+                    try:
+                        with open(self._robocasa_action_log_file, 'a') as f:
+                            # 遍历当前chunk的所有时间步（horizon维度，通常16步）
+                            for t in range(horizon):
+                                # IK输入：wrist pose（IK处理前的数据）
+                                left_ik_input = pred_left_eepose_seq[0, t, :]      # (6,) = [wrist_xyz(3), rotvec(3)]
+                                right_ik_input = pred_right_eepose_seq[0, t, :]   # (6,)
+                                
+                                # IK输出：arm joint angles（IK处理后的数据）
+                                left_ik_output = q_left_arm_seq[0, t, :]          # (7,) - arm joint angles
+                                right_ik_output = q_right_arm_seq[0, t, :]        # (7,)
+                                
+                                # 其他数据：finger joints 和 waist
+                                left_hand = unnormalized_action["action.left_hand"][0, t, :]    # (6,) - finger joints
+                                right_hand = unnormalized_action["action.right_hand"][0, t, :]  # (6,)
+                                waist = unnormalized_action["action.waist"][0, t, :]          # (3,) - waist joint angles
+                                
+                                # 获取该时间步的输入和输出时间戳
+                                timestamp_input = ik_timestamps_input[t]
+                                timestamp_output = ik_timestamps_output[t]
+                                
+                                # 拼接完整数据：IK输入 + IK输出 + finger + waist
+                                full_data = np.concatenate([
+                                    left_ik_input,    # L_IK_input: wrist_xyz(3) + rotvec(3) = 6
+                                    left_ik_output,   # L_IK_output: arm_q1~q7 = 7
+                                    right_ik_input,   # R_IK_input: wrist_xyz(3) + rotvec(3) = 6
+                                    right_ik_output,  # R_IK_output: arm_q1~q7 = 7
+                                    left_hand,        # L_finger_q1~6 = 6
+                                    right_hand,       # R_finger_q1~6 = 6
+                                    waist             # waist_q1~q3 = 3
+                                ])  # 总共：6+7+6+7+6+6+3 = 41个值
+                                
+                                # 写入一行：chunk_id t timestamp_input timestamp_output 41个数值
+                                line = f"{self._robocasa_action_chunk_counter} {t} {timestamp_input:.9f} {timestamp_output:.9f}"
+                                for val in full_data:
+                                    line += f" {val:.6f}"
+                                line += "\n"
+                                f.write(line)
+                        
+                        self._robocasa_action_chunk_counter += 1
+                        
+                        # 每10个chunk打印一次进度
+                        if self._robocasa_action_chunk_counter % 10 == 0:
+                            print(f"[RoboCasa Action Logger] 已保存 {self._robocasa_action_chunk_counter} 个chunk数据")
+                    except Exception as e:
+                        print(f"[RoboCasa Action Logger] 保存失败: {e}")
+                        import traceback
+                        traceback.print_exc()
+            # ==========================================================
 
         return unnormalized_action
 

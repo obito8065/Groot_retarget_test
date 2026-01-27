@@ -15,7 +15,9 @@
 
 import sys
 import os
-
+# 将项目根目录加入 Python 搜索路径
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, project_root)
 # # 将上级目录 (即项目根目录 /vla/users/lijiayi/code/GR00T_QwenVLA/) 
 # # 添加到 Python 搜索路径的最前面
 # project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -35,6 +37,8 @@ from gr00t.eval.simulation import (
     VideoConfig,
 )
 from gr00t.model.policy import Gr00tPolicy
+
+
 
 # 模型推理时固定随机种子
 def set_seed_everywhere(seed: int):
@@ -90,6 +94,12 @@ if __name__ == "__main__":
     # 仿真评测任务的每个episode的随机种子起始值
     parser.add_argument("--episode_seed_start", type=int, default=0)
 
+    parser.add_argument(
+        "--ignore_done", 
+        action="store_true", 
+        help="Ignore collision failures in the environment"
+    )
+
     args = parser.parse_args()
 
     if args.server:
@@ -126,6 +136,7 @@ if __name__ == "__main__":
                 n_action_steps=args.n_action_steps, max_episode_steps=args.max_episode_steps
             ),
             # episode_seed_start=args.episode_seed_start, # 仿真评测任务的每个episode的随机种子起始值
+
         )
 
         # Run the simulation

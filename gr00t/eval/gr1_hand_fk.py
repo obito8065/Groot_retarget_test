@@ -1,78 +1,27 @@
-#!/usr/bin/env#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 """
-Fourier Hand FK（仅 FK 类 + 测试）：
-输入（每行）:
-t L_wrist(3) L_rotvec(3) L_finger6(6) R_wrist(3) R_rotvec(3) R_finger6(6)
+Fourier Hand FK v2 - 输出45维格式（与训练数据对齐）
 
-输出（每行）:
-t L_wrist(3) L_5tips(15) R_wrist(3) R_5tips(15)
-其中 tips 顺序: thumb, index, middle, ring, pinky
+输出格式（45维）:
+- left_key_points(21): wrist_xyz(3) + 5tips_xyz(15) + wrist_rotvec(3)
+- right_key_points(21): wrist_xyz(3) + 5tips_xyz(15) + wrist_rotvec(3)
+- waist(3)
 
-注意：
-- URDF 里存在 <mimic> 关节；Pinocchio 不会自动处理 mimic，本脚本会解析 URDF 并手动应用 mimic。
-- wrist pose 的 rotvec 表示 hand_base_link 在 camera 坐标系下的朝向；因此 tip 的 camera 坐标按：
-  p_cam = R_cam_from_hand @ p_hand + t_cam
-
-另外新增（供 policy 使用）：
-- PolicyFourierHandKeypoints：输入 policy 的 state.left_arm/state.left_hand 等，
-  输出与 episode_*_6keypoints_xyz.txt header 一致的关键点顺序：
-  [wrist, thumb, index, middle, ring, pinky]，坐标系为 camera frame。
-  其中 left_arm/right_arm 期望为 wrist_pose（pos3 + rotvec3 [+ 可选第7维]），
-  left_hand/right_hand 为 finger6。
-  （如果你传进来的是“7个手臂关节角”，那不是 wrist_pose，这个 wrapper 不适用。）
+与 body_retarget_robocasa_eepose_keypoints_v2.py 的输出格式完全对齐。
 """
 
 from __future__ import annotations
 
-import argparse
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional, Literal
+from typing import Dict, List, Tuple, Optional
 
 import numpy as np
 import pinocchio as pin
 from scipy.spatial.transform import Rotation as R
-
-
-# ============== 你给的样例输入（可替换/也可用 --input-txt 指定文件） ==============
-SAMPLE_INPUT = r"""
-# t L_wrist_x L_wrist_y L_wrist_z L_rotvec_x L_rotvec_y L_rotvec_z L_finger_q1 L_finger_q2 L_finger_q3 L_finger_q4 L_finger_q5 L_finger_q6 R_wrist_x R_wrist_y R_wrist_z R_rotvec_x R_rotvec_y R_rotvec_z R_finger_q1 R_finger_q2 R_finger_q3 R_finger_q4 R_finger_q5 R_finger_q6
-# L_finger_joint_names_6: L_index_proximal_joint L_middle_proximal_joint L_ring_proximal_joint L_pinky_proximal_joint L_thumb_proximal_yaw_joint L_thumb_proximal_pitch_joint
-# R_finger_joint_names_6: R_index_proximal_joint R_middle_proximal_joint R_ring_proximal_joint R_pinky_proximal_joint R_thumb_proximal_yaw_joint R_thumb_proximal_pitch_joint
-0 -0.23888783 0.13361477 0.21128708 -1.33076850 1.17501027 1.17894613 -0.00052188 -0.00058938 -0.00064615 -0.00051951 -0.00367418 -0.00115043 0.24146207 0.14099238 0.21498004 -1.17017198 1.31527550 1.25513116 -0.00192741 -0.00207026 -0.00212422 -0.00173645 -0.01637430 0.00044878
-1 -0.24106403 0.13198325 0.20984562 -1.31840192 1.16820877 1.16244245 -0.00066901 -0.00073909 -0.00080008 -0.00065587 -0.31562861 0.00160238 0.24139696 0.14220571 0.21413591 -1.17231373 1.30607045 1.25330007 -0.00166311 -0.00169372 -0.00161616 -0.00137743 -0.30150784 0.00298490
-2 -0.24376644 0.13345421 0.21186467 -1.30749702 1.16415681 1.13247669 -0.00067917 -0.00073585 -0.00078063 -0.00064387 -0.57895356 0.00251591 0.24211171 0.14290781 0.20997320 -1.17177907 1.29438000 1.24860041 -0.00179655 -0.00177940 -0.00164741 -0.00146714 -0.58849798 0.00374999
-3 -0.24517113 0.13427755 0.21097635 -1.29188586 1.15941877 1.08968532 -0.00068241 -0.00072146 -0.00074422 -0.00061768 -0.79591206 0.00330796 0.24130424 0.14328635 0.20696587 -1.16970270 1.28741842 1.24357087 -0.00149228 -0.00134603 -0.00105732 -0.00101233 -0.82143733 0.00395022
-4 -0.24942508 0.13569270 0.20933529 -1.27307082 1.16256919 1.03853851 -0.00076140 -0.00080331 -0.00083047 -0.00070121 -0.97447120 0.00352695 0.24074055 0.14569372 0.20284748 -1.16840066 1.28312642 1.23179094 -0.00150844 -0.00132386 -0.00098964 -0.00100025 -0.97161179 -0.00095656
-5 -0.25808499 0.13588791 0.20758468 -1.24793398 1.16150003 0.97882295 -0.00088169 -0.00092733 -0.00095997 -0.00081718 -1.12061686 0.00368248 0.23922045 0.14777200 0.20070182 -1.16917882 1.27415873 1.21926040 -0.00127636 -0.00100584 -0.00057201 -0.00070604 -1.08516687 0.00160241
-6 -0.26467711 0.13724219 0.20913888 -1.22030084 1.15946325 0.90934104 -0.00077128 -0.00078863 -0.00078663 -0.00067515 -1.23869928 0.00354034 0.23917468 0.15019169 0.19879600 -1.16423811 1.26634781 1.20434628 -0.00148644 -0.00119307 -0.00073317 -0.00087123 -1.20644213 0.00234171
-7 -0.26874630 0.14223792 0.21616264 -1.20867009 1.22406246 0.85142799 -0.00061136 -0.00062722 -0.00062587 -0.00057161 -1.33614455 0.00301831 0.23798418 0.15442051 0.20207990 -1.20227434 1.29179772 1.14575908 -0.00089628 -0.00050826 0.00005762 -0.00026928 -1.30722627 0.00331183
-8 -0.27169343 0.14568742 0.22108096 -1.19386679 1.28204917 0.80182713 -0.00050166 -0.00049072 -0.00045701 -0.00043669 -1.41712804 0.00292780 0.23708889 0.15895067 0.20492346 -1.23754626 1.31431971 1.09222042 -0.00106158 -0.00065536 -0.00006877 -0.00036172 -1.40496374 0.00274262
-9 -0.27120006 0.14820118 0.22546563 -1.18424994 1.32898182 0.76035271 -0.00031482 -0.00026498 -0.00018287 -0.00020674 -1.48286717 0.00258883 0.23629241 0.16262381 0.20457066 -1.26201657 1.33400277 1.04803919 -0.00106376 -0.00060419 0.00005404 -0.00023800 -1.49761636 0.00273144
-10 -0.26929412 0.14990709 0.22739713 -1.17177638 1.36641413 0.72084422 -0.00023874 -0.00017088 -0.00006583 -0.00010709 -1.53731032 0.00242120 0.23742646 0.16788679 0.20222649 -1.28028130 1.35163251 1.00856444 -0.00122987 -0.00078483 -0.00013828 -0.00038435 -1.57895052 0.00181881
-11 -0.26819584 0.15094687 0.22992681 -1.16276357 1.39786531 0.68936333 -0.00020705 -0.00012891 -0.00001109 -0.00006215 -1.58099161 0.00230028 0.23644013 0.17261664 0.19889981 -1.29645456 1.36334729 0.97771029 -0.00073867 -0.00019184 0.00030480 0.00017017 -1.64432132 0.00301729
-12 -0.26597643 0.15135023 0.22885263 -1.15593174 1.42118660 0.66907164 -0.00012785 -0.00003518 0.00004723 0.00003340 -1.61802430 0.00198568 0.23739350 0.17590086 0.19218700 -1.31074240 1.37217224 0.94735928 -0.00078078 -0.00023055 0.00024792 0.00010650 -1.70182438 0.00296567
-13 -0.26043323 0.15192062 0.22541107 -1.14821886 1.43824131 0.65000234 -0.00004261 0.00002073 0.00002234 0.00001622 -1.64784021 0.00128695 0.23809280 0.17830749 0.18829793 -1.32371594 1.37852216 0.92623129 -0.00064822 -0.00005649 0.00046740 0.00028530 -1.73936722 0.00319741
-14 -0.25735184 0.15313640 0.22429597 -1.14684281 1.45465002 0.63457192 -0.00002476 0.00004397 0.00006020 0.00004354 -1.67086425 0.00152683 0.23536319 0.18301801 0.18269354 -1.33149563 1.38147486 0.91066572 -0.00001355 0.00000104 0.00002453 0.00002374 -1.74718112 0.00123050
-15 -0.25253048 0.15563682 0.22423610 -1.14427837 1.46685245 0.61886499 0.00000599 0.00004218 0.00006926 0.00004909 -1.69029025 0.00102964 0.23297255 0.19001705 0.17791104 -1.34234147 1.38266503 0.89519531 -0.00001386 0.00004760 0.00012604 0.00008906 -1.74353325 0.00256083
-16 -0.24918104 0.15690222 0.22184746 -1.14323685 1.47435879 0.60575985 -0.00000043 0.00003793 0.00008023 0.00005717 -1.70690966 0.00140295 0.23053444 0.19573157 0.17443765 -1.35138609 1.38246624 0.88578962 0.00009913 0.00023111 0.00040206 0.00031004 -1.74272873 0.00334621
-17 -0.24486494 0.15879031 0.21894047 -1.14030508 1.47865150 0.59365671 0.00001845 0.00003719 0.00008918 0.00006317 -1.72008127 0.00112800 0.23105820 0.20043391 0.16973160 -1.35539258 1.38024420 0.87951589 -0.00008204 0.00007148 0.00027707 0.00019883 -1.74275843 0.00287467
-18 -0.24177781 0.16269652 0.21715625 -1.14005982 1.48649389 0.58402519 0.00001388 0.00003861 0.00009290 0.00006260 -1.73025468 0.00099059 0.23200515 0.20323213 0.16711652 -1.36163706 1.38570202 0.87270022 0.00004267 0.00024602 0.00057283 0.00044286 -1.74247231 0.00325669
-19 -0.23739054 0.16173469 0.21291979 -1.13944820 1.49099883 0.57150099 0.00010949 0.00016003 0.00024630 0.00020573 -1.74017503 0.00162861 0.23749725 0.20635337 0.16725676 -1.35958932 1.40448517 0.87016033 -0.00050354 -0.00033567 -0.00003481 -0.00002559 -1.74212581 0.00243018
-20 -0.23181778 0.16464272 0.21218488 -1.13966075 1.49657853 0.56205467 0.00002460 0.00005928 0.00022825 0.00009620 -1.74149710 0.00055883 0.23658505 0.20785037 0.16686814 -1.36465054 1.40858948 0.85870433 0.00037479 0.00056286 0.00037056 0.00043106 -1.74288373 0.00294311
-21 -0.22742622 0.16693110 0.21138430 -1.13711316 1.50412193 0.55313587 0.00004060 0.00008405 0.00025634 0.00012340 -1.74229733 0.00119792 0.23652383 0.21084724 0.16684528 -1.37070150 1.41508902 0.85076570 0.00018933 0.00035353 0.00017140 0.00028099 -1.74272163 0.00194695
-22 -0.22844636 0.16875690 0.21172840 -1.13743999 1.50624082 0.53849610 -0.00005768 -0.00002427 0.00013246 0.00002897 -1.74186402 0.00175093 0.23712898 0.21247992 0.16594002 -1.37714462 1.42541513 0.84627086 0.00020804 0.00042460 0.00037597 0.00043695 -1.74279775 0.00238523
-23 -0.22531056 0.16845656 0.21348032 -1.13777892 1.50412460 0.53034573 0.00001311 0.00005007 0.00019440 0.00010168 -1.74229084 0.00145204 0.23597680 0.21580785 0.16694863 -1.37804449 1.41861959 0.83853229 0.00021024 0.00029299 0.00027099 0.00028987 -1.74273239 0.00109199
-24 -0.22297662 0.16906511 0.21408968 -1.14281055 1.50946601 0.51979544 0.00000028 0.00002291 0.00015504 0.00007718 -1.74243019 0.00133047 0.23591513 0.21932126 0.16738336 -1.38332342 1.41827455 0.83360327 0.00012451 0.00018729 0.00026092 0.00027437 -1.74278862 0.00176593
-25 -0.21993925 0.17235574 0.21170588 -1.14191812 1.51179997 0.50770964 -0.00003324 -0.00001456 0.00005851 0.00003289 -1.74252046 0.00058309 0.23723475 0.22305422 0.16751320 -1.38364282 1.41977594 0.83625569 0.00011325 0.00023260 0.00037669 0.00039622 -1.74275144 0.00197948
-26 -0.21994827 0.17665145 0.21514625 -1.14369262 1.51302917 0.49893956 -0.00002558 0.00000469 0.00006984 0.00004515 -1.74090325 0.00122089 0.23779044 0.22615188 0.16749669 -1.38517681 1.42154739 0.83500083 0.00035161 0.00052828 0.00084885 0.00071426 -1.74282539 0.00225459
-27 -0.21898860 0.17958835 0.21843324 -1.14622552 1.51455331 0.49033587 0.00002226 0.00004901 0.00015346 0.00009668 -1.74223309 0.00140684 0.23649399 0.22883948 0.16751822 -1.39244771 1.42038370 0.82478735 0.00047543 0.00086668 0.00124893 0.00084984 -1.74286803 0.00219979
-28 -0.22138069 0.17945097 0.22117485 -1.14709414 1.51581963 0.47586284 -0.00000425 0.00001692 0.00011553 0.00007633 -1.74250317 0.00182461 0.23739519 0.23345588 0.16700938 -1.39809161 1.42383968 0.82311988 0.00016378 0.00051419 0.00083344 0.00056030 -1.74273995 0.00121219
-29 -0.21912429 0.18288990 0.22359562 -1.14817237 1.51723709 0.46654228 -0.00000242 0.00000298 0.00011736 0.00001535 -1.74244645 0.00057972 0.23521913 0.23517851 0.16722541 -1.40166248 1.41663120 0.81350133 0.00078243 0.00118293 0.00159679 0.00122799 -1.74287882 0.00240731
-""".strip()
 
 
 @dataclass(frozen=True)
@@ -86,8 +35,8 @@ class MimicSpec:
 class FourierHandFK:
     """
     Fourier 单手 FK：
-      - 输入：wrist pose（cam下 pos+rotvec） + finger6（6个“主动关节”）
-      - 输出：wrist xyz + 5个指尖 xyz（都在 cam 坐标系下）
+      - 输入：wrist pose（cam下 pos+rotvec） + finger6（6个"主动关节"）
+      - 输出：21维关键点：wrist_xyz(3) + 5tips_xyz(15) + wrist_rotvec(3)
     """
 
     def __init__(self, urdf_path: Path, side: str):
@@ -102,7 +51,7 @@ class FourierHandFK:
         self.model = pin.buildModelFromUrdf(str(self.urdf_path))
         self.data = self.model.createData()
 
-        # 6个输入关节名（与你输入文件 header 一致）
+        # 6个输入关节名
         self.finger_joint_names_6 = [
             f"{side}_index_proximal_joint",
             f"{side}_middle_proximal_joint",
@@ -122,17 +71,14 @@ class FourierHandFK:
         ]
         self.tip_frame_ids_5 = [self.model.getFrameId(n) for n in self.tip_frame_names_5]
 
-        # 解析 mimic 关系：Pinocchio 默认不处理 mimic，因此我们要手动把 mimic joint 的 q 写进去
+        # 解析 mimic 关系
         self.mimics: List[MimicSpec] = self._parse_mimics_from_urdf(self.urdf_path)
 
-        # 快速校验：输入的 6 个关节必须存在
+        # 校验关节存在
         for jn in self.finger_joint_names_6:
             jid = self.model.getJointId(jn)
             if jid == 0:
-                raise ValueError(
-                    f"[{side}] URDF 里找不到关节 {jn}（joint_id=0）。"
-                    f"\n  你可能用错了 left/right 的 URDF，或 URDF 版本不匹配。"
-                )
+                raise ValueError(f"[{side}] URDF 里找不到关节 {jn}")
 
     @staticmethod
     def _parse_mimics_from_urdf(urdf_path: Path) -> List[MimicSpec]:
@@ -163,7 +109,7 @@ class FourierHandFK:
         q[idx_q] = float(value)
 
     def _apply_mimics(self, q: np.ndarray) -> None:
-        # 大多数 mimic 都是指向“主动关节”，一遍足够；这里做两遍以防极少数链式 mimic。
+        """应用 mimic 关节"""
         for _ in range(2):
             for m in self.mimics:
                 mid = self.model.getJointId(m.mimic_joint)
@@ -179,31 +125,31 @@ class FourierHandFK:
         wrist_pos_cam: np.ndarray,      # (3,)
         wrist_rotvec_cam: np.ndarray,   # (3,)
         finger6: np.ndarray,            # (6,)
-    ) -> Tuple[np.ndarray, List[np.ndarray]]:
+    ) -> np.ndarray:
         """
-        返回：
-          wrist_pos_cam: (3,)
-          tips_pos_cam_5: 5个(3,) ，顺序 thumb/index/middle/ring/pinky
+        返回 21维关键点：
+          wrist_xyz(3) + 5tips_xyz(15) + wrist_rotvec(3) = 21维
+        顺序：wrist, thumb_tip, index_tip, middle_tip, ring_tip, pinky_tip, wrist_rotvec
         """
-        wrist_pos_cam = np.asarray(wrist_pos_cam, dtype=np.float64).reshape(3)
-        wrist_rotvec_cam = np.asarray(wrist_rotvec_cam, dtype=np.float64).reshape(3)
-        finger6 = np.asarray(finger6, dtype=np.float64).reshape(6)
+        wrist_pos_cam = np.asarray(wrist_pos_cam, dtype=np.float64).copy().reshape(3)
+        wrist_rotvec_cam = np.asarray(wrist_rotvec_cam, dtype=np.float64).copy().reshape(3)
+        finger6 = np.asarray(finger6, dtype=np.float64).copy().reshape(6)
 
-        # 1) 手部在“自身根坐标系”（hand_base_link）下做 FK：只需要关节角 q
+        # 1) 手部在"自身根坐标系"（hand_base_link）下做 FK
         q = pin.neutral(self.model).copy()
 
-        # 先写入 6 个主动关节
+        # 写入 6 个主动关节
         for jn, v in zip(self.finger_joint_names_6, finger6):
             self._set_1dof_joint(q, jn, v)
 
-        # 再写入 mimic 关节（中节/远节等）
+        # 写入 mimic 关节
         self._apply_mimics(q)
 
         # FK + frame placements
         pin.framesForwardKinematics(self.model, self.data, q)
         pin.updateFramePlacements(self.model, self.data)
 
-        # 2) 把根系下的 tip 点变换到 camera 坐标系：p_cam = R * p_hand + t
+        # 2) 变换到 camera 坐标系：p_cam = R * p_hand + t
         R_cam = R.from_rotvec(wrist_rotvec_cam).as_matrix()
         t_cam = wrist_pos_cam
 
@@ -213,334 +159,230 @@ class FourierHandFK:
             p_cam = R_cam @ p_hand + t_cam
             tips_cam.append(p_cam)
 
-        return wrist_pos_cam, tips_cam
-
-
-# =============================================================================
-# 供 policy 使用的封装
-# =============================================================================
-
-def _infer_time_major(x: np.ndarray) -> bool:
-    """
-    尝试推断 3D 输入是 (T,B,D) 还是 (B,T,D)。
-    经验规则（尽量贴合你现在的 obs 打印 (5,1,7) ）：
-    - 若 shape[1] == 1 且 shape[0] > 1：更像 (T,B,D)
-    - 否则默认 (B,T,D)
-    """
-    if x.ndim != 3:
-        raise ValueError(f"_infer_time_major 仅支持 3D, got shape={x.shape}")
-    if x.shape[1] == 1 and x.shape[0] > 1:
-        return True
-    return False
-
-
-def _to_bt(x: np.ndarray, *, time_major: bool) -> np.ndarray:
-    """把 (T,B,D) 或 (B,T,D) 统一转成 (B,T,D)。"""
-    x = np.asarray(x)
-    if x.ndim != 3:
-        raise ValueError(f"期望 3D (T,B,D) 或 (B,T,D)，got shape={x.shape}")
-    return np.transpose(x, (1, 0, 2)) if time_major else x
-
-
-def _from_bt(x_bt: np.ndarray, *, time_major: bool) -> np.ndarray:
-    """把 (B,T,...) 转回 (T,B,...) 或保持 (B,T,...)。"""
-    if x_bt.ndim < 2:
-        raise ValueError(f"_from_bt 期望 >=2D, got shape={x_bt.shape}")
-    return np.transpose(x_bt, (1, 0, *range(2, x_bt.ndim))) if time_major else x_bt
+        # 组装 21维：wrist_xyz(3) + 5tips(15) + wrist_rotvec(3)
+        key_points = np.concatenate([wrist_pos_cam] + tips_cam + [wrist_rotvec_cam])
+        return key_points
 
 
 class PolicyFourierHandKeypoints:
     """
-    用于 policy 的 Fourier 手关键点 FK（基于本文件 FourierHandFK）：
-
-    输入（来自 policy 的 state.*）：
+    用于 policy 的 Fourier 手关键点 FK v2：
+    
+    输入（来自 policy 输出的 state）：
       - left_arm/right_arm: wrist_pose，最后一维 >=6
-            [pos_x, pos_y, pos_z, rotvec_x, rotvec_y, rotvec_z, (optional extra...)]
+            [pos_x, pos_y, pos_z, rotvec_x, rotvec_y, rotvec_z, ...]
       - left_hand/right_hand: finger6，最后一维 ==6
             [index, middle, ring, pinky, thumb_yaw, thumb_pitch]
-        （若你的 finger6 顺序不同，在调用前重排即可）
+      - waist: 腰部参数，最后一维 ==3
 
+    输出格式（45维）：
+      - left_key_points(21): wrist_xyz(3) + 5tips_xyz(15) + wrist_rotvec(3)
+      - right_key_points(21): wrist_xyz(3) + 5tips_xyz(15) + wrist_rotvec(3)
+      - waist(3)
+      
     支持形状：
-      - (T,B,7)/(T,B,6) 或 (B,T,7)/(B,T,6)
-      - (B,7)/(B,6)（单帧）
-      - (7,)/(6,)（单帧单 batch）
-
-    输出：
-      - left_keypoints/right_keypoints：关键点顺序与 `*_6keypoints_xyz.txt` 一致：
-        [wrist, thumb, index, middle, ring, pinky]
-        shape 与输入对齐（默认返回和输入相同的 time_major/batch_major 布局）。
+      - (B, T, D) 批量时序
+      - (B, D) 批量单帧
+      - (D,) 单样本
+      
     """
 
     def __init__(self, left_urdf: Path, right_urdf: Path):
         self.fk_L = FourierHandFK(left_urdf, side="L")
         self.fk_R = FourierHandFK(right_urdf, side="R")
 
-    @staticmethod
-    def _normalize_single(x: np.ndarray, target_last: int) -> np.ndarray:
-        x = np.asarray(x, dtype=np.float64)
-        if x.ndim == 1:
-            x = x[None, :]  # (1,D)
-        if x.shape[-1] < target_last:
-            raise ValueError(f"最后一维不足: got {x.shape[-1]}, need >= {target_last}")
-        return x
-
-    def compute_keypoints(
+    def compute_state_45d(
         self,
-        left_arm: np.ndarray,
-        left_hand: np.ndarray,
-        right_arm: np.ndarray,
-        right_hand: np.ndarray,
-        *,
-        time_major: Optional[bool] = None,
-        return_time_major: Optional[bool] = None,
-    ) -> Tuple[np.ndarray, np.ndarray]:
+        left_arm: np.ndarray,    # (..., >=6)
+        left_hand: np.ndarray,   # (..., 6)
+        right_arm: np.ndarray,   # (..., >=6)
+        right_hand: np.ndarray,  # (..., 6)
+        waist: np.ndarray,       # (..., 3)
+    ) -> np.ndarray:
         """
-        Args:
-            time_major: 输入是否为 (T,B,D)。None 则自动推断（只对 3D 有意义）。
-            return_time_major: 输出布局。None 表示跟随输入布局。
-
+        计算45维state格式
+        
         Returns:
-            left_keypoints, right_keypoints
+            output: (..., 45) 与输入的batch/time维度对齐
         """
-        la = np.asarray(left_arm)
-        lh = np.asarray(left_hand)
-        ra = np.asarray(right_arm)
-        rh = np.asarray(right_hand)
-
-        # -------- 统一到 (B,T,*) 或 (B,*) --------
-        if la.ndim == 3:
-            if time_major is None:
-                time_major = _infer_time_major(la)
-            if return_time_major is None:
-                return_time_major = time_major
-
-            la_bt = _to_bt(la, time_major=time_major)
-            lh_bt = _to_bt(lh, time_major=time_major)
-            ra_bt = _to_bt(ra, time_major=time_major)
-            rh_bt = _to_bt(rh, time_major=time_major)
-
-            B, T, Da = la_bt.shape
-            if lh_bt.shape[:2] != (B, T) or ra_bt.shape[:2] != (B, T) or rh_bt.shape[:2] != (B, T):
-                raise ValueError(
-                    f"BT 维度不一致: la={la_bt.shape}, lh={lh_bt.shape}, ra={ra_bt.shape}, rh={rh_bt.shape}"
-                )
-
-            if lh_bt.shape[-1] != 6 or rh_bt.shape[-1] != 6:
-                raise ValueError(f"finger6 期望最后一维=6, got lh={lh_bt.shape}, rh={rh_bt.shape}")
-
-            # wrist_pose: 取前6维
-            la6 = la_bt[..., :6]
-            ra6 = ra_bt[..., :6]
-
-            # 展平做循环（pinocchio 本来就不是很好矢量化）
-            N = B * T
-            la6_f = la6.reshape(N, 6)
-            ra6_f = ra6.reshape(N, 6)
-            lh_f = lh_bt.reshape(N, 6)
-            rh_f = rh_bt.reshape(N, 6)
-
-            L_out = np.zeros((N, 6, 3), dtype=np.float64)
-            R_out = np.zeros((N, 6, 3), dtype=np.float64)
-
-            for i in range(N):
-                lw = la6_f[i, 0:3]
-                lr = la6_f[i, 3:6]
-                rw = ra6_f[i, 0:3]
-                rr = ra6_f[i, 3:6]
-
-                # left
-                wrist_pos, tips = self.fk_L.forward_keypoints_cam(lw, lr, lh_f[i])
-                L_out[i, 0, :] = wrist_pos
-                L_out[i, 1:, :] = np.stack(tips, axis=0)  # thumb..pinky
-
-                # right
-                wrist_pos, tips = self.fk_R.forward_keypoints_cam(rw, rr, rh_f[i])
-                R_out[i, 0, :] = wrist_pos
-                R_out[i, 1:, :] = np.stack(tips, axis=0)
-
-            L_bt = L_out.reshape(B, T, 6, 3)
-            R_bt = R_out.reshape(B, T, 6, 3)
-
-            L_ret = _from_bt(L_bt, time_major=bool(return_time_major))
-            R_ret = _from_bt(R_bt, time_major=bool(return_time_major))
-            return L_ret.astype(np.float32), R_ret.astype(np.float32)
-
-        # -------- 单帧：支持 (B,D) 或 (D,) --------
-        la2 = self._normalize_single(la, 6)  # (B,>=6)
-        ra2 = self._normalize_single(ra, 6)
-        lh2 = self._normalize_single(lh, 6)  # (B,6)
-        rh2 = self._normalize_single(rh, 6)
-
-        if lh2.shape[-1] != 6 or rh2.shape[-1] != 6:
-            raise ValueError(f"finger6 期望最后一维=6, got lh={lh2.shape}, rh={rh2.shape}")
-
-        B = la2.shape[0]
-        if ra2.shape[0] != B or lh2.shape[0] != B or rh2.shape[0] != B:
-            raise ValueError(f"batch 不一致: la={la2.shape}, ra={ra2.shape}, lh={lh2.shape}, rh={rh2.shape}")
-
-        la6 = la2[:, :6]
-        ra6 = ra2[:, :6]
-
-        L_out = np.zeros((B, 6, 3), dtype=np.float64)
-        R_out = np.zeros((B, 6, 3), dtype=np.float64)
-
-        for i in range(B):
-            lw = la6[i, 0:3]
-            lr = la6[i, 3:6]
-            rw = ra6[i, 0:3]
-            rr = ra6[i, 3:6]
-
-            wrist_pos, tips = self.fk_L.forward_keypoints_cam(lw, lr, lh2[i])
-            L_out[i, 0, :] = wrist_pos
-            L_out[i, 1:, :] = np.stack(tips, axis=0)
-
-            wrist_pos, tips = self.fk_R.forward_keypoints_cam(rw, rr, rh2[i])
-            R_out[i, 0, :] = wrist_pos
-            R_out[i, 1:, :] = np.stack(tips, axis=0)
-
-        # 如果输入是 (D,) 单帧单 batch，就返回 (6,3)；否则返回 (B,6,3)
-        if np.asarray(left_arm).ndim == 1:
-            return L_out[0].astype(np.float32), R_out[0].astype(np.float32)
-        return L_out.astype(np.float32), R_out.astype(np.float32)
-
-
-# =============================================================================
-# 原有 CLI 测试：保持不变
-# =============================================================================
-
-def _load_lines(input_txt: str | None) -> List[str]:
-    if input_txt is None:
-        return SAMPLE_INPUT.splitlines()
-    p = Path(input_txt).expanduser().resolve()
-    return p.read_text(encoding="utf-8").splitlines()
-
-
-def parse_wrist_pose_joints_lines(lines: List[str]) -> List[Dict[str, np.ndarray]]:
-    rows = []
-    for line in lines:
-        s = line.strip()
-        if not s or s.startswith("#"):
-            continue
-        parts = s.split()
-        if len(parts) < 25:
-            raise ValueError(f"行 token 数不够(期望>=25): {line}")
-
-        t = int(float(parts[0]))
-        nums = np.array([float(x) for x in parts[1:25]], dtype=np.float64)
-
-        L_wrist = nums[0:3]
-        L_rotvec = nums[3:6]
-        L_f6 = nums[6:12]
-        R_wrist = nums[12:15]
-        R_rotvec = nums[15:18]
-        R_f6 = nums[18:24]
-
-        rows.append(
-            dict(
-                t=np.array([t], dtype=np.int64),
-                L_wrist=L_wrist,
-                L_rotvec=L_rotvec,
-                L_f6=L_f6,
-                R_wrist=R_wrist,
-                R_rotvec=R_rotvec,
-                R_f6=R_f6,
+        la = np.asarray(left_arm, dtype=np.float64)
+        lh = np.asarray(left_hand, dtype=np.float64)
+        ra = np.asarray(right_arm, dtype=np.float64)
+        rh = np.asarray(right_hand, dtype=np.float64)
+        w = np.asarray(waist, dtype=np.float64)
+        
+        # 验证形状
+        if la.shape[:-1] != lh.shape[:-1] or la.shape[:-1] != ra.shape[:-1] or \
+           la.shape[:-1] != rh.shape[:-1] or la.shape[:-1] != w.shape[:-1]:
+            raise ValueError(
+                f"batch/time维度不匹配: la={la.shape}, lh={lh.shape}, "
+                f"ra={ra.shape}, rh={rh.shape}, waist={w.shape}"
             )
+        
+        if la.shape[-1] < 6 or ra.shape[-1] < 6:
+            raise ValueError(f"arm需要>=6维: la={la.shape}, ra={ra.shape}")
+        if lh.shape[-1] != 6 or rh.shape[-1] != 6:
+            raise ValueError(f"hand需要6维: lh={lh.shape}, rh={rh.shape}")
+        if w.shape[-1] != 3:
+            raise ValueError(f"waist需要3维: w={w.shape}")
+        
+        # 保存原始形状
+        orig_shape = la.shape[:-1]
+        
+        # 展平到 (N, D)
+        la_flat = la.reshape(-1, la.shape[-1])
+        lh_flat = lh.reshape(-1, 6)
+        ra_flat = ra.reshape(-1, ra.shape[-1])
+        rh_flat = rh.reshape(-1, 6)
+        w_flat = w.reshape(-1, 3)
+        
+        N = la_flat.shape[0]
+        output = np.zeros((N, 45), dtype=np.float32)
+        
+        # 计算每个样本的FK
+        for i in range(N):
+            # 左手
+            lw_pos = la_flat[i, 0:3]
+            lw_rot = la_flat[i, 3:6]
+            left_21d = self.fk_L.forward_keypoints_cam(lw_pos, lw_rot, lh_flat[i])
+            
+            # 右手
+            rw_pos = ra_flat[i, 0:3]
+            rw_rot = ra_flat[i, 3:6]
+            right_21d = self.fk_R.forward_keypoints_cam(rw_pos, rw_rot, rh_flat[i])
+            
+            # 组装45维
+            output[i] = np.concatenate([left_21d, right_21d, w_flat[i]])
+        
+        # 恢复原始形状
+        output = output.reshape(*orig_shape, 45)
+        return output
+
+    def batch_process(
+        self,
+        states: Dict[str, np.ndarray]
+    ) -> np.ndarray:
+        """
+        方便的批量处理接口
+        
+        Args:
+            states: 字典，包含 'left_arm', 'left_hand', 'right_arm', 'right_hand', 'waist'
+        
+        Returns:
+            output: (..., 45)
+        """
+        return self.compute_state_45d(
+            left_arm=states['left_arm'],
+            left_hand=states['left_hand'],
+            right_arm=states['right_arm'],
+            right_hand=states['right_hand'],
+            waist=states['waist']
         )
-    return rows
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument(
-        "--left-urdf",
-        type=Path,
-        default=Path("/home/hello/文档/HumanLearning/retarget/assets/robots/hands/fourier_hand/fourier_left_hand.urdf"),
-    )
-    ap.add_argument(
-        "--right-urdf",
-        type=Path,
-        default=Path("/home/hello/文档/HumanLearning/retarget/assets/robots/hands/fourier_hand/fourier_right_hand.urdf"),
-    )
-    ap.add_argument("--input-txt", type=str, default=None, help="可选：指向 wrist_pose_joints.txt 的路径；不传则用脚本内置样例")
-    ap.add_argument("--float-fmt", type=str, default="{:.8f}")
-    args = ap.parse_args()
+def test_single_sample():
+    """测试单样本"""
+    print("=" * 80)
+    print("测试单样本FK")
+    print("=" * 80)
+    
+    left_urdf = Path("/vla/users/lijiayi/code/robot_retarget_for_fourier/retarget/assets/robots/hands/fourier_hand/fourier_left_hand.urdf")
+    right_urdf = Path("/vla/users/lijiayi/code/robot_retarget_for_fourier/retarget/assets/robots/hands/fourier_hand/fourier_right_hand.urdf")
+    
+    fk = PolicyFourierHandKeypoints(left_urdf, right_urdf)
+    
+    # 构造测试输入
+    left_arm = np.array([-0.23888783, 0.13361477, 0.21128708, -1.33076850, 1.17501027, 1.17894613])
+    left_hand = np.array([-0.00052188, -0.00058938, -0.00064615, -0.00051951, -0.00367418, -0.00115043])
+    right_arm = np.array([0.24146207, 0.14099238, 0.21498004, -1.17017198, 1.31527550, 1.25513116])
+    right_hand = np.array([-0.00192741, -0.00207026, -0.00212422, -0.00173645, -0.01637430, 0.00044878])
+    waist = np.array([0.0, 0.0, 0.0])
+    
+    output = fk.compute_state_45d(left_arm, left_hand, right_arm, right_hand, waist)
+    
+    print(f"输出形状: {output.shape}")
+    print(f"输出维度: {output.shape[-1]}")
+    print(f"\n左手关键点 (21维):")
+    print(f"  wrist_xyz:       {output[0:3]}")
+    print(f"  thumb_tip_xyz:   {output[3:6]}")
+    print(f"  index_tip_xyz:   {output[6:9]}")
+    print(f"  middle_tip_xyz:  {output[9:12]}")
+    print(f"  ring_tip_xyz:    {output[12:15]}")
+    print(f"  pinky_tip_xyz:   {output[15:18]}")
+    print(f"  wrist_rotvec:    {output[18:21]}")
+    print(f"\n右手关键点 (21维):")
+    print(f"  wrist_xyz:       {output[21:24]}")
+    print(f"  thumb_tip_xyz:   {output[24:27]}")
+    print(f"  index_tip_xyz:   {output[27:30]}")
+    print(f"  middle_tip_xyz:  {output[30:33]}")
+    print(f"  ring_tip_xyz:    {output[33:36]}")
+    print(f"  pinky_tip_xyz:   {output[36:39]}")
+    print(f"  wrist_rotvec:    {output[39:42]}")
+    print(f"\nwaist (3维):       {output[42:45]}")
 
-    # 1) FK 实例化
-    fk_L = FourierHandFK(args.left_urdf, side="L")
-    fk_R = FourierHandFK(args.right_urdf, side="R")
 
-    # 2) 读取并解析输入
-    lines = _load_lines(args.input_txt)
-    rows = parse_wrist_pose_joints_lines(lines)
+def test_batch():
+    """测试批量处理"""
+    print("\n" + "=" * 80)
+    print("测试批量处理")
+    print("=" * 80)
+    
+    left_urdf = Path("/vla/users/lijiayi/code/robot_retarget_for_fourier/retarget/assets/robots/hands/fourier_hand/fourier_left_hand.urdf")
+    right_urdf = Path("/vla/users/lijiayi/code/robot_retarget_for_fourier/retarget/assets/robots/hands/fourier_hand/fourier_right_hand.urdf")
+    
+    fk = PolicyFourierHandKeypoints(left_urdf, right_urdf)
+    
+    # 构造批量输入 (B=3, T=5)
+    B, T = 3, 5
+    left_arm = np.random.randn(B, T, 6)
+    left_hand = np.random.randn(B, T, 6) * 0.01
+    right_arm = np.random.randn(B, T, 6)
+    right_hand = np.random.randn(B, T, 6) * 0.01
+    waist = np.random.randn(B, T, 3) * 0.1
+    
+    output = fk.compute_state_45d(left_arm, left_hand, right_arm, right_hand, waist)
+    
+    print(f"输入形状: left_arm={left_arm.shape}, left_hand={left_hand.shape}")
+    print(f"输出形状: {output.shape}")
+    print(f"输出维度: {output.shape[-1]}")
+    print(f"验证: {'✓' if output.shape == (B, T, 45) else '✗'}")
 
-    # 3) 输出 header（与 episode_*_6keypoints_xyz.txt 对齐）
-    cols = (
-        ["t"]
-        + ["L_wrist_x", "L_wrist_y", "L_wrist_z"]
-        + [f"L_{name}_{ax}" for name in ["thumb_tip", "index_tip", "middle_tip", "ring_tip", "pinky_tip"] for ax in ["x", "y", "z"]]
-        + ["R_wrist_x", "R_wrist_y", "R_wrist_z"]
-        + [f"R_{name}_{ax}" for name in ["thumb_tip", "index_tip", "middle_tip", "ring_tip", "pinky_tip"] for ax in ["x", "y", "z"]]
-    )
-    print("# " + " ".join(cols))
-    print("# 左手6个关键点: 手腕(L_hand_base_link) + 5个指尖(thumb/index/middle/ring/pinky)")
-    print("# 右手6个关键点: 手腕(R_hand_base_link) + 5个指尖(thumb/index/middle/ring/pinky)")
-    print("# 坐标系: 相机坐标系")
 
-    # 4) 逐帧 FK 并打印
-    ff = args.float_fmt
-    for r in rows:
-        t = int(r["t"][0])
+def test_dict_interface():
+    """测试字典接口"""
+    print("\n" + "=" * 80)
+    print("测试字典接口")
+    print("=" * 80)
+    
+    left_urdf = Path("/vla/users/lijiayi/code/robot_retarget_for_fourier/retarget/assets/robots/hands/fourier_hand/fourier_left_hand.urdf")
+    right_urdf = Path("/vla/users/lijiayi/code/robot_retarget_for_fourier/retarget/assets/robots/hands/fourier_hand/fourier_right_hand.urdf")
+    
+    fk = PolicyFourierHandKeypoints(left_urdf, right_urdf)
+    
+    # 使用字典接口
+    states = {
+        'left_arm': np.random.randn(2, 6),
+        'left_hand': np.random.randn(2, 6) * 0.01,
+        'right_arm': np.random.randn(2, 6),
+        'right_hand': np.random.randn(2, 6) * 0.01,
+        'waist': np.random.randn(2, 3) * 0.1,
+    }
+    
+    output = fk.batch_process(states)
+    
+    print(f"输入: 字典包含 {list(states.keys())}")
+    print(f"输出形状: {output.shape}")
+    print(f"验证: {'✓' if output.shape == (2, 45) else '✗'}")
 
-        L_wrist, L_tips = fk_L.forward_keypoints_cam(r["L_wrist"], r["L_rotvec"], r["L_f6"])
-        R_wrist, R_tips = fk_R.forward_keypoints_cam(r["R_wrist"], r["R_rotvec"], r["R_f6"])
 
-        out_vals: List[float] = []
-        out_vals += list(L_wrist.reshape(3))
-        out_vals += [float(v) for p in L_tips for v in p.reshape(3)]
-        out_vals += list(R_wrist.reshape(3))
-        out_vals += [float(v) for p in R_tips for v in p.reshape(3)]
-
-        print(str(t) + " " + " ".join(ff.format(float(v)) for v in out_vals))
 
 
 if __name__ == "__main__":
-    main()
-
-
-"""
-输出：
-# t L_wrist_x L_wrist_y L_wrist_z L_thumb_tip_x L_thumb_tip_y L_thumb_tip_z L_index_tip_x L_index_tip_y L_index_tip_z L_middle_tip_x L_middle_tip_y L_middle_tip_z L_ring_tip_x L_ring_tip_y L_ring_tip_z L_pinky_tip_x L_pinky_tip_y L_pinky_tip_z R_wrist_x R_wrist_y R_wrist_z R_thumb_tip_x R_thumb_tip_y R_thumb_tip_z R_index_tip_x R_index_tip_y R_index_tip_z R_middle_tip_x R_middle_tip_y R_middle_tip_z R_ring_tip_x R_ring_tip_y R_ring_tip_z R_pinky_tip_x R_pinky_tip_y R_pinky_tip_z
-# 左手6个关键点: 手腕(L_hand_base_link) + 5个指尖(thumb/index/middle/ring/pinky)
-# 右手6个关键点: 手腕(R_hand_base_link) + 5个指尖(thumb/index/middle/ring/pinky)
-# 坐标系: 相机坐标系
-0 -0.23888783 0.13361477 0.21128708 -0.21212703 0.09537908 0.07846799 -0.20740351 -0.03168002 0.19246792 -0.21106663 -0.03976959 0.21479616 -0.20967075 -0.03099867 0.23656190 -0.20865492 -0.02023163 0.25721715 0.24146207 0.14099238 0.21498004 0.20987324 0.10381517 0.08240901 0.21639382 -0.02478171 0.19199272 0.22122593 -0.03338840 0.21389891 0.22080760 -0.02536731 0.23592072 0.21966217 -0.01528503 0.25698208
-1 -0.24106403 0.13198325 0.20984562 -0.17878675 0.09620664 0.08528216 -0.21185936 -0.03360254 0.18993495 -0.21591267 -0.04182995 0.21214501 -0.21464861 -0.03327071 0.23400286 -0.21372306 -0.02270071 0.25476336 0.24139696 0.14220571 0.21413591 0.17942523 0.10587179 0.08932970 0.21683633 -0.02352265 0.19029461 0.22154500 -0.03220873 0.21219843 0.22096230 -0.02428119 0.23424840 0.21962393 -0.01428715 0.25534406
-2 -0.24376644 0.13345421 0.21186467 -0.15425326 0.09791406 0.10382787 -0.21800454 -0.03269521 0.19189697 -0.22267336 -0.04090015 0.21399443 -0.22163413 -0.03244473 0.23590415 -0.22086309 -0.02196740 0.25671803 0.24211171 0.14290781 0.20997320 0.15316167 0.10814293 0.10081107 0.21760260 -0.02263590 0.18482788 0.22208945 -0.03146830 0.20672057 0.22130417 -0.02368183 0.22881351 0.21976230 -0.01382061 0.24995894
-3 -0.24517113 0.13427755 0.21097635 -0.13692721 0.09671004 0.12307655 -0.22441942 -0.03256427 0.19094658 -0.22995003 -0.04068979 0.21287415 -0.22921922 -0.03235418 0.23484174 -0.22865602 -0.02198458 0.25571638 0.24130424 0.14328635 0.20696587 0.13418861 0.10991344 0.11574692 0.21649936 -0.02207571 0.18093907 0.22082991 -0.03101479 0.20282233 0.21992786 -0.02332429 0.22494210 0.21824843 -0.01355008 0.24612085
-4 -0.24942508 0.13569270 0.20933529 -0.13011432 0.09367872 0.14179679 -0.23523937 -0.03190271 0.18987570 -0.24168338 -0.03976042 0.21165088 -0.24117885 -0.03143617 0.23362916 -0.24072758 -0.02107409 0.25451012 0.24074055 0.14569372 0.20284748 0.12448600 0.11421835 0.12463635 0.21501002 -0.01947435 0.17648925 0.21907394 -0.02845573 0.19840700 0.21802145 -0.02077123 0.22052147 0.21620412 -0.01099582 0.24168952
-5 -0.25808499 0.13588791 0.20758468 -0.13320265 0.08812951 0.15953603 -0.25166208 -0.03215976 0.18791171 -0.25920638 -0.03973893 0.20943060 -0.25901412 -0.03150416 0.23144753 -0.25873880 -0.02122887 0.25237399 0.23922045 0.14777200 0.20070182 0.11778999 0.11711755 0.13235081 0.21298432 -0.01720574 0.17366485 0.21672297 -0.02625175 0.19561550 0.21542442 -0.01860805 0.21772959 0.21335983 -0.00886498 0.23889291
-6 -0.26467711 0.13724219 0.20913888 -0.13858993 0.08252293 0.17909094 -0.26714737 -0.03087466 0.18916977 -0.27595083 -0.03803039 0.21035327 -0.27614636 -0.02984502 0.23238800 -0.27609212 -0.01962651 0.25334476 0.23917468 0.15019169 0.19879600 0.11315167 0.12134971 0.14161322 0.21152572 -0.01438728 0.17075005 0.21488710 -0.02356066 0.19270922 0.21339183 -0.01599108 0.21483582 0.21116140 -0.00630986 0.23601062
-7 -0.26874630 0.14223792 0.21616264 -0.14563671 0.07946914 0.19821410 -0.28163527 -0.02610229 0.20338112 -0.29057980 -0.03181618 0.22494025 -0.28999150 -0.02272177 0.24660863 -0.28903964 -0.01166016 0.26711215 0.23798418 0.15442051 0.20207990 0.10967691 0.12531918 0.15403340 0.20835268 -0.01096918 0.18196327 0.21099509 -0.01901755 0.20445723 0.20904482 -0.01026952 0.22610744 0.20638845 0.00055221 0.24667706
-8 -0.27169343 0.14568742 0.22108096 -0.15230054 0.07674032 0.21301885 -0.29392224 -0.02203116 0.21443852 -0.30285694 -0.02649132 0.23629600 -0.30146347 -0.01669650 0.25761897 -0.29960935 -0.00500019 0.27770509 0.23708889 0.15895067 0.20492346 0.10711933 0.13064761 0.16598912 0.20557095 -0.00681967 0.19213669 0.20755816 -0.01379359 0.21505316 0.20521930 -0.00397264 0.23619844 0.20223089 0.00787546 0.25614666
-9 -0.27120006 0.14820118 0.22546563 -0.15523222 0.07524516 0.22576406 -0.30068550 -0.01852242 0.22430568 -0.30956048 -0.02191235 0.24637936 -0.30750863 -0.01153374 0.26736956 -0.30491882 0.00068359 0.28706144 0.23629241 0.16262381 0.20457066 0.10514324 0.13626216 0.17471838 0.20264134 -0.00307304 0.19758143 0.20412865 -0.00918366 0.22078143 0.20156283 0.00147618 0.24148840 0.19838870 0.01412495 0.26090945
-10 -0.26929412 0.14990709 0.22739713 -0.15685505 0.07368761 0.23492576 -0.30549544 -0.01546346 0.23046847 -0.31436520 -0.01795424 0.25266403 -0.31176695 -0.00716206 0.27338297 -0.30856058 0.00541249 0.29275716 0.23742646 0.16788679 0.20222649 0.10573689 0.14422611 0.18031838 0.20144652 0.00254517 0.20010185 0.20249401 -0.00282483 0.22350793 0.19977740 0.00854198 0.24381588 0.19650692 0.02186193 0.26276521
-11 -0.26819584 0.15094687 0.22992681 -0.15874205 0.07263058 0.24321160 -0.30961382 -0.01308286 0.23671946 -0.31841541 -0.01482123 0.25901381 -0.31534204 -0.00368391 0.27948334 -0.31161049 0.00918611 0.29856756 0.23644013 0.17261664 0.19889981 0.10477287 0.15095649 0.18320773 0.19898143 0.00760034 0.20054285 0.19969493 0.00282545 0.22409188 0.19679733 0.01473694 0.24406293 0.19341094 0.02856512 0.26262163
-12 -0.26597643 0.15135023 0.22885263 -0.15873464 0.07208784 0.24659669 -0.31092585 -0.01161439 0.23830311 -0.31961741 -0.01283509 0.26067513 -0.31616087 -0.00147472 0.28096096 -0.31202534 0.01158562 0.29983069 0.23739350 0.17590086 0.19218700 0.10604193 0.15650713 0.18151074 0.19835224 0.01131569 0.19706479 0.19868760 0.00707708 0.22072466 0.19561950 0.01947114 0.24037431 0.19210247 0.03375318 0.25856137
-13 -0.26043323 0.15192062 0.22541107 -0.15523983 0.07186023 0.24691120 -0.30859096 -0.01000587 0.23671376 -0.31724180 -0.01081597 0.25911967 -0.31349622 0.00068530 0.27927616 -0.30905210 0.01386131 0.29799453 0.23809280 0.17830749 0.18829793 0.10710962 0.16024515 0.18083942 0.19826169 0.01400951 0.19576532 0.19835206 0.01019873 0.21950078 0.19515038 0.02295893 0.23889235 0.19151308 0.03758393 0.25678203
-14 -0.25735184 0.15313640 0.22429597 -0.15364639 0.07277326 0.24886217 -0.30767636 -0.00795031 0.23791932 -0.31624286 -0.00834800 0.26036881 -0.31225564 0.00336341 0.28035694 -0.30755039 0.01671996 0.29888282 0.23536319 0.18301801 0.18269354 0.10447845 0.16582129 0.17516808 0.19489082 0.01895673 0.19169805 0.19470953 0.01542771 0.21546706 0.19134395 0.02842985 0.23467884 0.18764275 0.04326768 0.25237402
-15 -0.25253048 0.15563682 0.22423610 -0.15027028 0.07499261 0.25158806 -0.30499038 -0.00460942 0.23960289 -0.31353642 -0.00465670 0.26206309 -0.30937521 0.00721133 0.28192272 -0.30447388 0.02069862 0.30030255 0.23297255 0.19001705 0.17791104 0.10208950 0.17264558 0.16900220 0.19217730 0.02613387 0.18855292 0.19177287 0.02289751 0.21236157 0.18825085 0.03613868 0.23138005 0.18439980 0.05119903 0.24885493
-16 -0.24918104 0.15690222 0.22184746 -0.14814189 0.07616611 0.25173900 -0.30320475 -0.00269620 0.23848566 -0.31177804 -0.00247298 0.26093445 -0.30752787 0.00952072 0.28069918 -0.30251816 0.02311323 0.29897204 0.23053444 0.19573157 0.17443765 0.09971308 0.17803721 0.16477348 0.18983881 0.03190256 0.18622548 0.18929477 0.02886922 0.21005927 0.18564527 0.04226702 0.22894187 0.18165790 0.05747321 0.24626093
-17 -0.24486494 0.15879031 0.21894047 -0.14498675 0.07787066 0.25092717 -0.30043806 -0.00020384 0.23624674 -0.30907741 0.00021795 0.25866699 -0.30477809 0.01227631 0.27838148 -0.29969816 0.02591780 0.29659843 0.23105820 0.20043391 0.16973160 0.10029705 0.18276264 0.15938972 0.19027736 0.03664798 0.18183066 0.18960122 0.03369221 0.20567112 0.18585352 0.04715183 0.22448962 0.18177372 0.06241509 0.24173630
-18 -0.24177781 0.16269652 0.21715625 -0.14271798 0.08175122 0.25069483 -0.29851154 0.00425463 0.23571632 -0.30712589 0.00491016 0.25814068 -0.30271785 0.01708490 0.27775935 -0.29751831 0.03082535 0.29586797 0.23200515 0.20323213 0.16711652 0.10122756 0.18556192 0.15679253 0.19103955 0.03960678 0.18066937 0.19034572 0.03686845 0.20453613 0.18660631 0.05050000 0.22322988 0.18251799 0.06592444 0.24033223
-19 -0.23739054 0.16173469 0.21291979 -0.13939836 0.08061950 0.24837070 -0.29548525 0.00390149 0.23242806 -0.30416728 0.00479007 0.25481875 -0.29972266 0.01706845 0.27436382 -0.29446430 0.03089337 0.29239138 0.23749725 0.20635337 0.16725676 0.10648229 0.18974024 0.15844649 0.19530188 0.04321939 0.18283738 0.19483159 0.04071687 0.20673473 0.19141106 0.05456094 0.22533319 0.18765588 0.07018167 0.24232908
-20 -0.23181778 0.16464272 0.21218488 -0.13433251 0.08331905 0.24834916 -0.29091917 0.00731538 0.23273096 -0.29960595 0.00840978 0.25511039 -0.29510442 0.02079672 0.27457185 -0.28976059 0.03470777 0.29250982 0.23658505 0.20785037 0.16686814 0.10555272 0.19160123 0.15770754 0.19381179 0.04500060 0.18375104 0.19323942 0.04271974 0.20766889 0.18971747 0.05675349 0.22611614 0.18594063 0.07253916 0.24295320
-21 -0.22742622 0.16693110 0.21138430 -0.13064563 0.08497288 0.24800057 -0.28782138 0.01022380 0.23288388 -0.29647412 0.01151785 0.25526600 -0.29184672 0.02397608 0.27465224 -0.28636555 0.03794250 0.29250559 0.23652383 0.21084724 0.16684528 0.10547620 0.19488340 0.15768110 0.19338639 0.04826398 0.18530460 0.19278369 0.04622179 0.20924283 0.18927922 0.06044546 0.22754703 0.18552828 0.07640456 0.24422409
-22 -0.22844636 0.16875690 0.21172840 -0.13256174 0.08625034 0.24953193 -0.29019835 0.01269896 0.23408328 -0.29897078 0.01423417 0.25640327 -0.29435909 0.02680697 0.27571942 -0.28887725 0.04087083 0.29349510 0.23712898 0.21247992 0.16594002 0.10602391 0.19652992 0.15747883 0.19386876 0.05016605 0.18637620 0.19336199 0.04839068 0.21033879 0.18995823 0.06281873 0.22849880 0.18628242 0.07896797 0.24501028
-23 -0.22531056 0.16845656 0.21348032 -0.12991650 0.08579912 0.25212941 -0.28771929 0.01267589 0.23594273 -0.29661850 0.01430915 0.25820559 -0.29207636 0.02692410 0.27751107 -0.28665239 0.04102352 0.29527616 0.23597680 0.21580785 0.16694863 0.10495304 0.20015695 0.15720721 0.19234969 0.05352997 0.18688442 0.19160227 0.05174347 0.21083768 0.18805125 0.06616420 0.22897464 0.18423828 0.08230910 0.24546026
-24 -0.22297662 0.16906511 0.21408968 -0.12793667 0.08646666 0.25370522 -0.28600622 0.01376617 0.23810122 -0.29492005 0.01566367 0.26033701 -0.29034809 0.02846057 0.27951553 -0.28488980 0.04272356 0.29713859 0.23591513 0.21932126 0.16738336 0.10493382 0.20340999 0.15730527 0.19237909 0.05709692 0.18794724 0.19154844 0.05542451 0.21190565 0.18793308 0.06992637 0.22996301 0.18404718 0.08614621 0.24635793
-25 -0.21993925 0.17235574 0.21170588 -0.12564300 0.08937482 0.25222283 -0.28421998 0.01767157 0.23636128 -0.29321727 0.01976751 0.25854550 -0.28863009 0.03264302 0.27766900 -0.28315033 0.04697340 0.29522930 0.23723475 0.22305422 0.16751320 0.10624089 0.20698214 0.15778506 0.19391645 0.06078927 0.18821647 0.19315716 0.05911874 0.21217831 0.18958141 0.07361813 0.23024413 0.18572066 0.08983608 0.24664683
-26 -0.21994827 0.17665145 0.21514625 -0.12610104 0.09340979 0.25632635 -0.28488945 0.02235080 0.24046494 -0.29395643 0.02460811 0.26260510 -0.28938614 0.03757561 0.28167060 -0.28391342 0.05198613 0.29916740 0.23779044 0.22615188 0.16749669 0.10678770 0.21005162 0.15787095 0.19447594 0.06393849 0.18859969 0.19373566 0.06232386 0.21256694 0.19018374 0.07686152 0.23060334 0.18630959 0.09312083 0.24696669
-27 -0.21898860 0.17958835 0.21843324 -0.12558707 0.09635675 0.26056068 -0.28451302 0.02566283 0.24451958 -0.29364040 0.02808906 0.26661697 -0.28908989 0.04116263 0.28561378 -0.28362009 0.05566331 0.30303768 0.23649399 0.22883948 0.16751822 0.10556518 0.21266946 0.15706828 0.19304235 0.06678024 0.18950101 0.19215781 0.06533789 0.21347794 0.18847738 0.08000513 0.23138217 0.18445402 0.09638921 0.24759215
-28 -0.22138069 0.17945097 0.22117485 -0.12888309 0.09586523 0.26458952 -0.28816864 0.02620530 0.24804836 -0.29741723 0.02886999 0.27006764 -0.29289315 0.04206026 0.28899005 -0.28743191 0.05665947 0.30633372 0.23739519 0.23345588 0.16700938 0.10649229 0.21711490 0.15675461 0.19420546 0.07146686 0.19001252 0.19334076 0.07016739 0.21399758 0.18965478 0.08493847 0.23181612 0.18564115 0.10141159 0.24793397
-29 -0.21912429 0.18288990 0.22359562 -0.12706893 0.09925673 0.26776496 -0.28669249 0.03009832 0.25109686 -0.29600549 0.03292826 0.27306804 -0.29149138 0.04620626 0.29193101 -0.28602081 0.06087714 0.30921261 0.23521913 0.23517851 0.16722541 0.10441876 0.21869701 0.15565649 0.19183958 0.07321467 0.19002811 0.19073366 0.07195349 0.21400629 0.18685826 0.08674858 0.23176318 0.18265196 0.10324660 0.24780991
-"""
+    # 运行测试
+    test_single_sample()
+    test_batch()
+    test_dict_interface()
+    
+    print("\n" + "=" * 80)
+    print("所有测试完成！")
+    print("=" * 80)

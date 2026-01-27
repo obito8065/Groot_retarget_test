@@ -7,7 +7,7 @@ export PYTHONPATH=$SOURCE_PATH:$PYTHONPATH
 set -x
 cd /vla/users/lijiayi/code/groot_retarget
 dataset_list=(
-      "/vla/users/lijiayi/robocasa_datasets_full/pick_and_place_lerobot_task24_eepose/gr1_unified.PosttrainPnPNovelFromCuttingboardToBasketSplitA_GR1ArmsAndWaistFourierHands_1000_keypoints"
+      "/vla/users/lijiayi/robocasa_datasets_full/pick_and_place_lerobot_task24_eepose/gr1_unified.PosttrainPnPNovelFromCuttingboardToBasketSplitA_GR1ArmsAndWaistFourierHands_1000_keypoints_v2"
 )
 data_config=(
   "robocasa_retarget"
@@ -40,7 +40,7 @@ fi
 num_epochs=80
 SAVE_STEPS=2000
 
-OUTPUT_DIR=/vla/users/lijiayi/code/groot_retarget/output_ckpt/n1.5_nopretrain_finetuneALL_on_robocasa_task1_retarget_v0.2
+OUTPUT_DIR=/vla/users/lijiayi/code/groot_retarget/output_ckpt/n1.5_nopretrain_finetuneALL_on_robocasa_task1_retarget_v0.3
 
 if [ ! -d "$OUTPUT_DIR" ]; then
   mkdir -p "$OUTPUT_DIR"
@@ -68,7 +68,6 @@ python scripts/gr00t_finetune.py \
 --save_steps $SAVE_STEPS \
 --data-config "${data_config[@]}" \
 --tune_visual \
---tune_llm \
 --embodiment_tag "${embodiment_tag_list[@]}" \
 --update_action_head \
 --learning_rate 1e-4 \

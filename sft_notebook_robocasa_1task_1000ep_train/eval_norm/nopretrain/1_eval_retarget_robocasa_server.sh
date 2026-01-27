@@ -10,7 +10,7 @@ export MUJOCO_GL=egl
 export CUDA_VISIBLE_DEVICES=5
 
 python3 scripts/inference_service.py --server \
-    --model_path /vla/users/lijiayi/code/groot_retarget/output_ckpt/n1.5_nopretrain_finetuneALL_on_robocasa_task1_retarget_v0.2/checkpoint-34000 \
+    --model_path /vla/users/lijiayi/code/groot_retarget/output_ckpt/n1.5_nopretrain_finetuneALL_on_robocasa_task1_retarget_v3/checkpoint-54000 \
     --data_config robocasa_retarget \
     --embodiment_tag robocasa \
     --port 57200 \

@@ -2,17 +2,29 @@
 
 ## 功能描述
 
-在policy推理时自动保存模型预测的手部关键点坐标，用于调试和分析预测质量。
+在policy推理时自动保存两类数据：
+1. **模型预测的手部关键点坐标**（Step 2输出）
+2. **Retarget后的动作输出**（Step 3输出）
+
+用于调试和分析预测质量、retarget效果。
 
 ## 保存位置
 
+### 1. 预测关键点
 ```
 /vla/users/lijiayi/code/groot_retarget/output_video_record/predicted_keypoints_YYYYMMDD_HHMMSS.txt
 ```
 
+### 2. Retarget后的动作
+```
+/vla/users/lijiayi/code/groot_retarget/output_video_record/retargeted_actions_YYYYMMDD_HHMMSS.txt
+```
+
 文件名包含时间戳，每次启动server会创建新文件。
 
-## 文件格式
+---
+
+## 文件1: 预测关键点 (predicted_keypoints_*.txt)
 
 ### 文件头
 ```
@@ -201,6 +213,75 @@ print(f"Z范围: [{keypoints[:, 2::3].min():.3f}, {keypoints[:, 2::3].max():.3f}
 ### 无进度输出
 - 确认`use_eepose=True`且`use_fourier_hand_retarget=True`
 - 确认`data_config=robocasa_retarget`
+
+---
+
+## 文件2: Retarget后的动作 (retargeted_actions_*.txt)
+
+### 文件头
+```
+# Retarget后的动作输出（wrist pose + finger joints）
+# 格式：frame_id t L_wrist_x L_wrist_y L_wrist_z L_rotvec_x L_rotvec_y L_rotvec_z L_finger_q1 L_finger_q2 L_finger_q3 L_finger_q4 L_finger_q5 L_finger_q6 R_wrist_x R_wrist_y R_wrist_z R_rotvec_x R_rotvec_y R_rotvec_z R_finger_q1 R_finger_q2 R_finger_q3 R_finger_q4 R_finger_q5 R_finger_q6
+# L_finger_joint_names_6: L_index_proximal_joint L_middle_proximal_joint L_ring_proximal_joint L_pinky_proximal_joint L_thumb_proximal_yaw_joint L_thumb_proximal_pitch_joint
+# R_finger_joint_names_6: R_index_proximal_joint R_middle_proximal_joint R_ring_proximal_joint R_pinky_proximal_joint R_thumb_proximal_yaw_joint R_thumb_proximal_pitch_joint
+```
+
+### 数据格式
+每行：`frame_id t coord_1 ... coord_24` (24个数值 = 左手12维 + 右手12维)
+
+### 数据顺序（共24维）
+
+**左手12维**: 
+- L_wrist_pose (6): [x, y, z, rotvec_x, rotvec_y, rotvec_z]
+- L_finger_joints (6): [index, middle, ring, pinky, thumb_yaw, thumb_pitch]
+
+**右手12维**: 同上
+
+### 重要：Finger Joints顺序转换
+- Retarget输出: `[pinky, ring, middle, index, thumb_pitch, thumb_yaw]`
+- 保存时已重排序为: `[index, middle, ring, pinky, thumb_yaw, thumb_pitch]`
+
+### 日志输出
+```
+[Retarget Logger] 创建日志文件: retargeted_actions_YYYYMMDD_HHMMSS.txt
+[Retarget Logger] 已保存 10 帧retarget数据
+```
+
+### 数据分析示例
+```python
+import numpy as np
+
+# 读取
+data = np.loadtxt('retargeted_actions_XXXXXX.txt', comments='#')
+actions = data[:, 2:]  # (N, 24)
+
+# 分离
+left_wrist = actions[:, 0:6]
+left_fingers = actions[:, 6:12]
+right_wrist = actions[:, 12:18]
+right_fingers = actions[:, 18:24]
+
+# 检查范围
+print(f"左手finger joints范围:")
+finger_names = ['index', 'middle', 'ring', 'pinky', 'thumb_yaw', 'thumb_pitch']
+for i, name in enumerate(finger_names):
+    print(f"  {name}: [{left_fingers[:, i].min():.3f}, {left_fingers[:, i].max():.3f}]")
+```
+
+---
+
+## 总结
+
+### 两个日志文件对比
+| 文件 | 内容 | 维度 | 用途 |
+|------|------|------|------|
+| `predicted_keypoints_*.txt` | 模型预测的关键点 | 36维 | 检查模型预测质量 |
+| `retargeted_actions_*.txt` | Retarget后的动作 | 24维 | 检查retarget效果 |
+
+### 调试流程
+1. 查看`predicted_keypoints_*.txt` → 检查模型预测是否合理
+2. 查看`retargeted_actions_*.txt` → 检查retarget输出是否合理
+3. 对比两个文件 → 验证retarget是否保持了关键点的空间关系
 
 ---
 
