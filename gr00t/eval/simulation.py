@@ -91,6 +91,8 @@ class MultiStepConfig:
     state_delta_indices: np.ndarray = field(default=np.array([0]))
     n_action_steps: int = 16
     max_episode_steps: int = 1440
+    # 新增：保存带有 chunk/step 标注的 substep 视频（用于调试和验证）
+    save_substep_video: bool = False
 
 
 @dataclass
@@ -299,6 +301,8 @@ def _create_single_env(config: SimulationConfig, idx: int, seed_queue: mp.Queue)
         state_delta_indices=config.multistep.state_delta_indices,
         n_action_steps=config.multistep.n_action_steps,
         max_episode_steps=config.multistep.max_episode_steps,
+        save_substep_video=config.multistep.save_substep_video,
+        video_dir=config.video.video_dir,
     )
     return env
 

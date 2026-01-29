@@ -15,6 +15,15 @@ import tensorflow as tf
 
 # --- 辅助函数 (保持不变) ---
 
+"""
+修改位置：
+    1. 使用 WDLS 求解器，支持阻尼
+    2. 添加轴角连续性约束
+    3. 求解不出来的兜底是使用上一次的IK解算结果
+    4. 每次IK的参考量使用上一次的IK结果
+
+"""
+
 @dataclass
 class GR1RetargetConfig:
     """Main configuration for GR1 retarget."""
@@ -65,7 +74,10 @@ def build_joint_array(kin: KDLKinematics, action_slices: Dict[str, np.ndarray], 
         arr[idx], counters[group] = values[offset], offset + 1
     return arr
 
+
+
 # --- 核心重构类 (严格按照 v0.py 逻辑重写) ---
+
 
 class BodyRetargeter:
     def __init__(self, urdf_path: Path, camera_intrinsics: Dict[str, float]):
@@ -106,34 +118,17 @@ class BodyRetargeter:
             "right_arm": self._compute_chain_max_reach(self.chain_right_arm),
         }
         # self._ik_last_solution = {name: None for name in self._chain_max_reach}
+
+        # === [FIX] last_solution 改为 dict bucket: env_idx -> {chain_label -> solution} ===
+        self._ik_last_solution = {}
         self._workspace_margin = 0.05
         self._ik_local_margin = np.deg2rad(90.0)
-        self._ik_last_solution = {}
-        self._ik_damping = 1e-3 # IK 阻尼因子
-        
-        # === 是否使用 URDF 关节限制（设为 False 则使用宽松的 ±π 限制）===
-        self._use_urdf_joint_limits = True
 
-        # === 从 URDF 提取真实关节限制 ===
-        self._joint_limits = self._extract_joint_limits_from_urdf(robot_urdf)
-        self._chain_joint_limits = {
-            "left_arm": self._get_chain_joint_limits(self.kin_left_arm),
-            "right_arm": self._get_chain_joint_limits(self.kin_right_arm),
-            "head": self._get_chain_joint_limits(self.kin_head),
-        }
+        # 新增：保存上一帧的四元数（按env_idx分桶），用于轴角连续性约束
+        # 注意：为了避免轴角表示的符号跳变，我们存储四元数而不是轴角
+        self._last_axisangle = {}  # {env_idx: {'left': quat(4,), 'right': quat(4,)}}
         
-        # 打印关节限制信息（调试用）
-        print("\n=== URDF 关节限制 ===")
-        for chain_name in ["left_arm", "right_arm"]:
-            if chain_name == "left_arm":
-                joint_names = self.kin_left_arm.get_joint_names()
-            else:
-                joint_names = self.kin_right_arm.get_joint_names()
-            q_min, q_max = self._chain_joint_limits[chain_name]
-            print(f"\n{chain_name}:")
-            for i, name in enumerate(joint_names):
-                print(f"  {name}: [{np.rad2deg(q_min[i]):.1f}°, {np.rad2deg(q_max[i]):.1f}°]")
-        print("=" * 30)
+        self._ik_damping = 1e-3 # IK 阻尼因子
         
         print("初始化完成。")
 
@@ -165,33 +160,7 @@ class BodyRetargeter:
             return
         self._ik_last_solution.pop(int(env_idx), None)
 
-    def _extract_joint_limits_from_urdf(self, robot_urdf: URDF) -> Dict[str, Tuple[float, float]]:
-        """从 URDF 中提取所有关节的限制。"""
-        joint_limits = {}
-        for joint in robot_urdf.joints:
-            if joint.type in ['revolute', 'prismatic'] and joint.limit is not None:
-                lower = joint.limit.lower if joint.limit.lower is not None else -np.pi
-                upper = joint.limit.upper if joint.limit.upper is not None else np.pi
-                joint_limits[joint.name] = (float(lower), float(upper))
-            elif joint.type == 'continuous':
-                joint_limits[joint.name] = (-2.0 * np.pi, 2.0 * np.pi)
-        return joint_limits
-    
-    def _get_chain_joint_limits(self, kin: KDLKinematics) -> Tuple[np.ndarray, np.ndarray]:
-        """获取运动学链中所有关节的限制。"""
-        joint_names = kin.get_joint_names()
-        num_joints = len(joint_names)
-        q_min = np.zeros(num_joints)
-        q_max = np.zeros(num_joints)
-        
-        for i, joint_name in enumerate(joint_names):
-            if joint_name in self._joint_limits:
-                q_min[i], q_max[i] = self._joint_limits[joint_name]
-            else:
-                q_min[i], q_max[i] = -np.pi, np.pi
-                print(f"警告：未找到关节 '{joint_name}' 的限制，使用默认值 [-π, π]")
-        
-        return q_min, q_max
+
 
     def _create_transform(self, t: List[float], q: List[float]) -> np.ndarray:
         T = np.eye(4)
@@ -233,6 +202,78 @@ class BodyRetargeter:
             upper = q_max[i]
             fallback.append(float(max(min(val, upper), lower)))
         return fallback, reason
+    
+
+    # 新增：轴角连续性约束函数（使用四元数方法）
+    def _ensure_axisangle_continuity(self, 
+                                    current_axisangle: np.ndarray, 
+                                    env_idx: int, 
+                                    hand_label: str) -> np.ndarray:
+        """
+        确保轴角表示的连续性，避免等价表示之间的跳变。
+        
+        使用四元数方法确保连续性：四元数 q 和 -q 表示同一个旋转。
+        我们选择与上一帧四元数点积为正的那个表示，然后转回轴角。
+        
+        参数:
+            current_axisangle: 当前帧的轴角 (3,)
+            env_idx: 环境索引
+            hand_label: 'left' 或 'right'
+        
+        返回:
+            修正后的轴角
+        """
+        env_idx = int(env_idx)
+        
+        # 初始化该env的缓存（现在存储四元数而不是轴角）
+        if env_idx not in self._last_axisangle:
+            self._last_axisangle[env_idx] = {}
+        
+        # 将当前轴角转换为四元数 (w, x, y, z)
+        current_quat = R.from_rotvec(current_axisangle).as_quat()  # scipy格式: (x, y, z, w)
+        
+        # 如果没有历史记录，直接保存四元数并返回原轴角
+        if hand_label not in self._last_axisangle[env_idx]:
+            self._last_axisangle[env_idx][hand_label] = current_quat.copy()
+            return current_axisangle
+        
+        last_quat = self._last_axisangle[env_idx][hand_label]
+        
+        # 计算两个四元数的点积
+        # 四元数 q 和 -q 表示同一个旋转，我们选择点积为正的那个
+        quat_dot = np.dot(current_quat, last_quat)
+        
+        if quat_dot < 0:
+            # 如果点积为负，翻转四元数符号（这不改变表示的旋转）
+            current_quat = -current_quat
+            # 转回轴角
+            corrected_axisangle = R.from_quat(current_quat).as_rotvec()
+            print(f"  [{hand_label} hand, env={env_idx}] 检测到四元数符号跳变，已修正 (quat_dot={quat_dot:.3f})")
+        else:
+            corrected_axisangle = current_axisangle
+        
+        # 更新历史记录（存储修正后的四元数）
+        self._last_axisangle[env_idx][hand_label] = current_quat.copy()
+        
+        return corrected_axisangle
+
+    # 修改 reset_ik_cache 方法，同时清空四元数历史缓存
+    def reset_ik_cache(self, env_idx: Optional[int] = None):
+        """
+        清空 IK 历史缓存（last_solution）和四元数历史缓存（用于轴角连续性约束）。
+        
+        Args:
+            env_idx: 环境索引
+                - None: 清空所有环境的缓存
+                - int: 仅清空指定环境的缓存
+        """
+        if env_idx is None:
+            self._ik_last_solution.clear()
+            self._last_axisangle.clear()  # 清空四元数历史
+            return
+        env_idx = int(env_idx)
+        self._ik_last_solution.pop(env_idx, None)
+        self._last_axisangle.pop(env_idx, None)  # 清空指定env的四元数历史
 
 
     def process_kinematics_dataloader(self, action_vectors: np.ndarray) -> Tuple[Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray]]:
@@ -300,8 +341,16 @@ class BodyRetargeter:
             right_hand_rot_mat = T_cam_to_right_hand[:3, :3]
             
             # 使用 scipy 将旋转矩阵转换为轴角（rotvec）
-            left_hand_axisangles[i] = R.from_matrix(left_hand_rot_mat).as_rotvec()
-            right_hand_axisangles[i] = R.from_matrix(right_hand_rot_mat).as_rotvec()
+            left_hand_axisangle_raw = R.from_matrix(left_hand_rot_mat).as_rotvec()
+            right_hand_axisangle_raw = R.from_matrix(right_hand_rot_mat).as_rotvec()
+            
+            # ===【新增】对FK计算出的轴角应用连续性约束，防止正负跳变 ===
+            left_hand_axisangles[i] = self._ensure_axisangle_continuity(
+                left_hand_axisangle_raw, env_idx=i, hand_label='left'
+            )
+            right_hand_axisangles[i] = self._ensure_axisangle_continuity(
+                right_hand_axisangle_raw, env_idx=i, hand_label='right'
+            )
         
         # 如果输入是单个向量，则压缩批次维度
         if squeeze_output:
@@ -416,8 +465,16 @@ class BodyRetargeter:
             right_hand_rot = np.asarray(T_cam_to_right_hand[:3, :3], dtype=np.float64)
             
             # 将旋转矩阵转换为轴角（rotation vector）
-            left_hand_axisangles[i] = R.from_matrix(left_hand_rot).as_rotvec()
-            right_hand_axisangles[i] = R.from_matrix(right_hand_rot).as_rotvec()
+            left_hand_axisangle_raw = R.from_matrix(left_hand_rot).as_rotvec()
+            right_hand_axisangle_raw = R.from_matrix(right_hand_rot).as_rotvec()
+            
+            # ===【新增】对FK计算出的轴角应用连续性约束，防止正负跳变 ===
+            left_hand_axisangles[i] = self._ensure_axisangle_continuity(
+                left_hand_axisangle_raw, env_idx=i, hand_label='left'
+            )
+            right_hand_axisangles[i] = self._ensure_axisangle_continuity(
+                right_hand_axisangle_raw, env_idx=i, hand_label='right'
+            )
         
         # 如果输入是单个向量，则压缩批次维度
         if squeeze_output:
@@ -508,6 +565,16 @@ class BodyRetargeter:
             curr_left_axisangle = left_hand_axisangle[i]
             curr_right_pos = right_hand_pos[i]
             curr_right_axisangle = right_hand_axisangle[i]
+
+            # ===【新增】步骤0: 轴角连续性约束 ===
+            curr_left_axisangle = self._ensure_axisangle_continuity(
+                curr_left_axisangle, env_idx=i, hand_label='left'
+            )
+            curr_right_axisangle = self._ensure_axisangle_continuity(
+                curr_right_axisangle, env_idx=i, hand_label='right'
+            )
+            
+
             
             # === 步骤1: 将轴角表示转换为旋转矩阵，构建 4x4 变换矩阵 ===
             left_hand_rot = R.from_rotvec(curr_left_axisangle).as_matrix()
@@ -577,7 +644,7 @@ class BodyRetargeter:
             q_right_arm = self._solve_ik(
                 self.chain_right_arm, T_torso_to_right_hand, curr_q_init_right,
                 chain_name="right_arm", env_idx=i
-            )    
+            )
             # 将结果添加到批次列表
             if q_left_arm is not None:
                 q_left_arm_batch.append(np.array(q_left_arm))
@@ -788,23 +855,23 @@ class BodyRetargeter:
             # 设置全局关节限制
             global_q_min = kdl.JntArray(num_joints)
             global_q_max = kdl.JntArray(num_joints)
-            
-            if self._use_urdf_joint_limits and chain_label in self._chain_joint_limits:
-                # 使用 URDF 中的真实限制
-                urdf_q_min, urdf_q_max = self._chain_joint_limits[chain_label]
-                for i in range(num_joints):
-                    global_q_min[i] = urdf_q_min[i] if i < len(urdf_q_min) else -np.pi
-                    global_q_max[i] = urdf_q_max[i] if i < len(urdf_q_max) else np.pi
-            else:
-                # 使用宽松的默认限制
-                for i in range(num_joints):
-                    global_q_min[i] = -2.0 * np.pi
-                    global_q_max[i] = 2.0 * np.pi
-                    
-            q_init_full = [q_init[i] if i < len(q_init) else 0.0 for i in range(num_joints)]
+            for i in range(num_joints):
+                global_q_min[i] = -2.0 * np.pi  # 较宽的限制
+                global_q_max[i] = 2.0 * np.pi
+
+            # q_init_full = [q_init[i] if i < len(q_init) else 0.0 for i in range(num_joints)]
             
             # 先取“该 env 的 last_solution”作为最终兜底候选
             last_sol = self._get_last_solution(env_idx, chain_label)
+
+            if last_sol is not None:
+                # 如果存在 last_solution，优先使用它作为初始猜测
+                q_init_full = last_sol[:num_joints] if len(last_sol) >= num_joints else last_sol + [0.0] * (num_joints - len(last_sol))
+                # 确保 q_init_full 长度正确
+                q_init_full = [q_init_full[i] if i < len(q_init_full) else 0.0 for i in range(num_joints)]
+            else:
+                # 如果没有 last_solution，才使用传入的 q_init
+                q_init_full = [q_init[i] if i < len(q_init) else 0.0 for i in range(num_joints)]
         
             if not self._is_target_within_workspace(chain_label, target_pose):
                  # 优先用 last_solution；否则用当前 q_init 做兜底
@@ -823,9 +890,12 @@ class BodyRetargeter:
             
             # 创建求解器所需组件
             fk_solver = kdl.ChainFkSolverPos_recursive(chain)
-            # ik_vel_solver = kdl.ChainIkSolverVel_pinv(chain)
-            ik_vel_solver = kdl.ChainIkSolverVel_wdls(chain) # 使用 PyKDL 内置的 WDLS（Weighted Damped Least Squares）求解器，支持阻尼
-            ik_vel_solver.setLambda(self._ik_damping)  # 设置阻尼因子，避免奇异点
+            ik_vel_solver = kdl.ChainIkSolverVel_pinv(chain) #原来使用的moore-penrose伪逆，无阻尼
+
+           
+            # ik_vel_solver = kdl.ChainIkSolverVel_wdls(chain) # 使用 PyKDL 内置的 WDLS（Weighted Damped Least Squares）求解器，支持阻尼
+            # ik_vel_solver.setLambda(self._ik_damping)  # 设置阻尼因子，避免奇异点
+
 
             # 多次尝试以提高成功率
             max_attempts = 5
@@ -880,13 +950,7 @@ class BodyRetargeter:
                     f"返回码: {ret}，maxiter={maxiter}，eps={eps}"
                 )
 
-
-
-            # 最终兜底策略
-            # fallback_solution, reason = self._prepare_fallback_solution(
-            #     chain_label, q_init, num_joints, global_q_min, global_q_max
-            # )
-            # self._ik_last_solution[chain_label] = fallback_solution
+            
             # 最终兜底：优先 last_solution，否则用 q_init clip
             fallback_solution = last_sol
             if fallback_solution is None:
@@ -904,27 +968,16 @@ class BodyRetargeter:
             import traceback
             traceback.print_exc()
             num_joints = chain.getNrOfJoints()
-            # 异常兜底：优先 last_solution，否则 clip(q_init) 到 URDF 限制
+            limit = 2.0 * np.pi
+            # 异常兜底：优先 last_solution，否则 clip(q_init)
             last_sol = self._get_last_solution(env_idx, chain_label)
             if last_sol is not None:
                 fallback = last_sol
             else:
-                # 使用 URDF 限制进行 clip
-                if chain_label in self._chain_joint_limits:
-                    urdf_q_min, urdf_q_max = self._chain_joint_limits[chain_label]
-                    fallback = [
-                        float(np.clip(
-                            q_init[i] if i < len(q_init) else 0.0,
-                            urdf_q_min[i] if i < len(urdf_q_min) else -np.pi,
-                            urdf_q_max[i] if i < len(urdf_q_max) else np.pi
-                        ))
-                        for i in range(num_joints)
-                    ]
-                else:
-                    fallback = [
-                        float(np.clip(q_init[i] if i < len(q_init) else 0.0, -np.pi, np.pi))
-                        for i in range(num_joints)
-                    ]
+                fallback = [
+                    float(np.clip(q_init[i] if i < len(q_init) else 0.0, -limit, limit))
+                    for i in range(num_joints)
+                ]
 
             self._set_last_solution(env_idx, chain_label, fallback)
             return fallback

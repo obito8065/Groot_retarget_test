@@ -7,16 +7,17 @@ Usage:
     读取policy输出的关键点txt文件，并重投影到视频上进行可视化验证
     
 Example:
-    python eval_retarget_reprojector_cli.py \
+    python eval_predict_reprojector_cli.py \
         --video output_video_record/.../video.mp4 \
         --keypoints output_video_record/predicted_keypoints_20260112_110653.txt \
         --fps 5 \
         --radius 8
 
-    python eval_retarget_reprojector_cli.py \
-        --video /vla/users/lijiayi/code/groot_retarget/output_video_record/output_retarget_1tasks_1000ep/n1.5_nopretrain_finetuneALL_on_robocasa_eepose_retarget_v3/58ksteps-modify5/5.mp4 \
-        --keypoints /vla/users/lijiayi/code/groot_retarget/output_video_record/predicted_keypoints_20260127_095208.txt \
-        --fps 5 \
+    python eval_predict_reprojector_cli.py \
+        --video /vla/users/lijiayi/code/groot_retarget/output_video_record/output_retarget_1tasks_1000ep/n1.5_nopretrain_finetuneALL_on_robocasa_eepose_retarget_v3_300ep/28ksteps-modify11/11.mp4 \
+        --keypoints /vla/users/lijiayi/code/groot_retarget/output_video_record/predicted_keypoints_20260129_153548.txt \
+        --fps 30 \
+        --steps-per-chunk 16 \
         --radius 8
 """
 
@@ -231,8 +232,10 @@ def main():
     # 可选参数
     parser.add_argument('--output', type=str, default=None,
                        help='输出视频路径（默认在输入视频目录生成*_reprojected.mp4）')
-    parser.add_argument('--fps', type=int, default=5,
-                       help='输出视频fps（默认5）')
+    parser.add_argument('--fps', type=int, default=30,
+                       help='输出视频fps（默认30，与substep视频一致）')
+    parser.add_argument('--steps-per-chunk', type=int, default=16,
+                       help='每个chunk的时间步数（默认16）')
     parser.add_argument('--radius', type=int, default=5,
                        help='关键点圆圈半径（默认5）')
     parser.add_argument('--thickness', type=int, default=2,
@@ -270,12 +273,13 @@ def main():
     }
     
     print("=" * 80)
-    print("Keypoints Reprojection Visualizer (CLI)")
+    print("Keypoints Reprojection Visualizer (Substep对齐版)")
     print("=" * 80)
     print(f"\n输入视频: {video_path}")
     print(f"关键点文件: {keypoints_path}")
     print(f"输出视频: {output_path}")
     print(f"输出FPS: {args.fps}")
+    print(f"每个chunk的步数: {args.steps_per_chunk}")
     print(f"可视化参数: radius={args.radius}, thickness={args.thickness}, labels={not args.no_labels}")
     
     # 检查输入文件
@@ -309,30 +313,31 @@ def main():
     
     print(f"✓ 视频信息: {width}x{height}, {input_fps:.2f} fps, {total_frames} 帧")
     
-    if input_fps <= args.fps:
-        frame_skip = 1
-        actual_output_fps = input_fps
-        print(f"✓ 输入FPS({input_fps:.2f}) <= 输出FPS({args.fps})，保持所有帧")
-    else:
-        frame_skip = int(input_fps / args.fps)
-        actual_output_fps = args.fps
-        print(f"✓ 帧采样: 每隔 {frame_skip} 帧取1帧 (从 {input_fps:.2f}fps 降至 {args.fps}fps)")
+    # 计算预期的总步数
+    total_keypoint_steps = len(keypoints_data)
+    expected_chunks = (total_keypoint_steps + args.steps_per_chunk - 1) // args.steps_per_chunk
+    
+    print(f"✓ 关键点数据: {total_keypoint_steps} 个时间步 ({expected_chunks} chunks × {args.steps_per_chunk} steps)")
+    print(f"✓ 视频帧数: {total_frames} 帧")
+    
+    if total_frames != total_keypoint_steps:
+        print(f"⚠ 警告: 视频帧数({total_frames}) != 关键点步数({total_keypoint_steps})，将按帧索引对齐")
     
     # 3. 创建输出视频
     print("\n[3/3] 处理视频并重投影关键点...")
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(str(output_path), fourcc, actual_output_fps, (width, height))
+    out = cv2.VideoWriter(str(output_path), fourcc, args.fps, (width, height))
     
     if not out.isOpened():
         print(f"❌ 错误: 无法创建输出视频文件")
         cap.release()
         return
     
-    # 处理每一帧
+    # 处理每一帧 - 直接一一对应
+    # 视频的第N帧对应 chunk_id = N // steps_per_chunk, timestep = N % steps_per_chunk
     frame_idx = 0
-    written_frames = 0
-    current_chunk_idx = 0
-    current_timestep = 0
+    matched_frames = 0
+    unmatched_frames = 0
     
     pbar = tqdm(total=total_frames, desc="处理进度")
     
@@ -341,53 +346,59 @@ def main():
         if not ret:
             break
         
-        if frame_idx % frame_skip == 0:
-            vis_frame = frame.copy()
-            key = (current_chunk_idx, current_timestep)
-            
-            if key in keypoints_data:
-                # 解包数据：支持新格式（带rotvec）和旧格式（不带rotvec）
-                data = keypoints_data[key]
-                if len(data) == 4:
-                    # 新格式：(left_kp, left_rotvec, right_kp, right_rotvec)
-                    left_kp_3d, left_rotvec, right_kp_3d, right_rotvec = data
-                else:
-                    # 旧格式：(left_kp, right_kp)
-                    left_kp_3d, right_kp_3d = data
-                    left_rotvec = right_rotvec = None
-                
-                # 投影关键点到2D
-                left_kp_2d, left_valid = project_3d_to_2d(left_kp_3d, camera_intrinsics)
-                right_kp_2d, right_valid = project_3d_to_2d(right_kp_3d, camera_intrinsics)
-                
-                # 绘制关键点和连线
-                draw_hand_keypoints(vis_frame, left_kp_2d, left_valid, COLOR_LEFT_HAND, "L_",
-                                   args.radius, args.thickness, not args.no_labels)
-                draw_hand_keypoints(vis_frame, right_kp_2d, right_valid, COLOR_RIGHT_HAND, "R_",
-                                   args.radius, args.thickness, not args.no_labels)
-                
-                # 绘制wrist的Z轴方向箭头（如果有rotvec数据），统一使用红色
-                if left_rotvec is not None:
-                    draw_wrist_rotation_arrow(vis_frame, left_kp_3d[0], left_rotvec, 
-                                             camera_intrinsics, None, arrow_length=0.08)
-                if right_rotvec is not None:
-                    draw_wrist_rotation_arrow(vis_frame, right_kp_3d[0], right_rotvec, 
-                                             camera_intrinsics, None, arrow_length=0.08)
-                
-                info_text = f"Chunk {current_chunk_idx} | Step {current_timestep} | Frame {frame_idx}"
-                cv2.putText(vis_frame, info_text, (10, 30),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        vis_frame = frame.copy()
+        
+        # 根据帧索引计算对应的 chunk_id 和 timestep
+        current_chunk_idx = frame_idx // args.steps_per_chunk
+        current_timestep = frame_idx % args.steps_per_chunk
+        key = (current_chunk_idx, current_timestep)
+        
+        if key in keypoints_data:
+            # 解包数据：支持新格式（带rotvec）和旧格式（不带rotvec）
+            data = keypoints_data[key]
+            if len(data) == 4:
+                # 新格式：(left_kp, left_rotvec, right_kp, right_rotvec)
+                left_kp_3d, left_rotvec, right_kp_3d, right_rotvec = data
             else:
-                cv2.putText(vis_frame, f"No keypoints for Chunk {current_chunk_idx}, Step {current_timestep}",
-                           (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+                # 旧格式：(left_kp, right_kp)
+                left_kp_3d, right_kp_3d = data
+                left_rotvec = right_rotvec = None
             
-            out.write(vis_frame)
-            written_frames += 1
+            # 投影关键点到2D
+            left_kp_2d, left_valid = project_3d_to_2d(left_kp_3d, camera_intrinsics)
+            right_kp_2d, right_valid = project_3d_to_2d(right_kp_3d, camera_intrinsics)
             
-            current_timestep += 1
-            if current_timestep >= 16:
-                current_timestep = 0
-                current_chunk_idx += 1
+            # 绘制关键点和连线
+            draw_hand_keypoints(vis_frame, left_kp_2d, left_valid, COLOR_LEFT_HAND, "L_",
+                               args.radius, args.thickness, not args.no_labels)
+            draw_hand_keypoints(vis_frame, right_kp_2d, right_valid, COLOR_RIGHT_HAND, "R_",
+                               args.radius, args.thickness, not args.no_labels)
+            
+            # 绘制wrist的Z轴方向箭头（如果有rotvec数据），统一使用红色
+            if left_rotvec is not None:
+                draw_wrist_rotation_arrow(vis_frame, left_kp_3d[0], left_rotvec, 
+                                         camera_intrinsics, None, arrow_length=0.08)
+            if right_rotvec is not None:
+                draw_wrist_rotation_arrow(vis_frame, right_kp_3d[0], right_rotvec, 
+                                         camera_intrinsics, None, arrow_length=0.08)
+            
+            matched_frames += 1
+        else:
+            unmatched_frames += 1
+        
+        # 添加信息文本（右上角显示）
+        info_text = f"Chunk {current_chunk_idx} | Step {current_timestep} | Frame {frame_idx}"
+        (text_w, text_h), _ = cv2.getTextSize(info_text, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
+        cv2.putText(vis_frame, info_text, (width - text_w - 10, 30),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        
+        if key not in keypoints_data:
+            no_data_text = "No keypoints data"
+            (nd_w, _), _ = cv2.getTextSize(no_data_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+            cv2.putText(vis_frame, no_data_text,
+                       (width - nd_w - 10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+        
+        out.write(vis_frame)
         
         frame_idx += 1
         pbar.update(1)
@@ -397,8 +408,10 @@ def main():
     out.release()
     
     print(f"\n✓ 处理完成!")
-    print(f"  输入帧数: {total_frames} ({input_fps:.2f} fps)")
-    print(f"  输出帧数: {written_frames} ({actual_output_fps:.2f} fps)")
+    print(f"  总帧数: {frame_idx}")
+    print(f"  匹配成功: {matched_frames} 帧")
+    print(f"  匹配失败: {unmatched_frames} 帧")
+    print(f"  输出FPS: {args.fps}")
     print(f"  输出文件: {output_path}")
     print("\n" + "=" * 80)
 

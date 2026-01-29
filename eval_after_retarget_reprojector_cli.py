@@ -11,9 +11,10 @@ Usage:
     
 Example:
     python eval_after_retarget_reprojector_cli.py \
-        --video /vla/users/lijiayi/code/groot_retarget/output_video_record/output_retarget_1tasks_1000ep/n1.5_nopretrain_finetuneALL_on_robocasa_eepose_retarget_v3/58ksteps-modify1/1_reprojected.mp4 \
-        --retarget /vla/users/lijiayi/code/groot_retarget/output_video_record/retargeted_actions_20260126_171642.txt \
-        --fps 5 \
+        --video /vla/users/lijiayi/code/groot_retarget/output_video_record/output_retarget_1tasks_1000ep/n1.5_nopretrain_finetuneALL_on_robocasa_eepose_retarget_v3_300ep/28ksteps-modify11/11_reprojected.mp4 \
+        --retarget /vla/users/lijiayi/code/groot_retarget/output_video_record/retargeted_actions_20260129_153548.txt \
+        --fps 30 \
+        --steps-per-chunk 16 \
         --axis-length 0.05
 """
 
@@ -228,8 +229,10 @@ def main():
     # 可选参数
     parser.add_argument('--output', type=str, default=None,
                        help='输出视频路径（默认在输入视频目录生成*_eepose_reprojected.mp4）')
-    parser.add_argument('--fps', type=int, default=5,
-                       help='输出视频fps（默认5）')
+    parser.add_argument('--fps', type=int, default=30,
+                       help='输出视频fps（默认30，与substep视频一致）')
+    parser.add_argument('--steps-per-chunk', type=int, default=16,
+                       help='每个chunk的时间步数（默认16）')
     parser.add_argument('--axis-length', type=float, default=0.05,
                        help='坐标轴长度（米，默认0.05）')
     parser.add_argument('--thickness', type=int, default=3,
@@ -265,12 +268,13 @@ def main():
     }
     
     print("=" * 80)
-    print("EE Pose Reprojection Visualizer")
+    print("EE Pose Reprojection Visualizer (Substep对齐版)")
     print("=" * 80)
     print(f"\n输入视频: {video_path}")
     print(f"Retarget文件: {retarget_path}")
     print(f"输出视频: {output_path}")
     print(f"输出FPS: {args.fps}")
+    print(f"每个chunk的步数: {args.steps_per_chunk}")
     print(f"可视化参数: axis_length={args.axis_length}m, thickness={args.thickness}")
     
     # 检查输入文件
@@ -304,30 +308,31 @@ def main():
     
     print(f"✓ 视频信息: {width}x{height}, {input_fps:.2f} fps, {total_frames} 帧")
     
-    if input_fps <= args.fps:
-        frame_skip = 1
-        actual_output_fps = input_fps
-        print(f"✓ 输入FPS({input_fps:.2f}) <= 输出FPS({args.fps})，保持所有帧")
-    else:
-        frame_skip = int(input_fps / args.fps)
-        actual_output_fps = args.fps
-        print(f"✓ 帧采样: 每隔 {frame_skip} 帧取1帧 (从 {input_fps:.2f}fps 降至 {args.fps}fps)")
+    # 计算预期的总步数
+    total_retarget_steps = len(retarget_data)
+    expected_chunks = (total_retarget_steps + args.steps_per_chunk - 1) // args.steps_per_chunk
+    
+    print(f"✓ Retarget数据: {total_retarget_steps} 个时间步 ({expected_chunks} chunks × {args.steps_per_chunk} steps)")
+    print(f"✓ 视频帧数: {total_frames} 帧")
+    
+    if total_frames != total_retarget_steps:
+        print(f"⚠ 警告: 视频帧数({total_frames}) != Retarget步数({total_retarget_steps})，将按帧索引对齐")
     
     # 3. 创建输出视频
     print("\n[3/3] 处理视频并重投影eepose...")
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(str(output_path), fourcc, actual_output_fps, (width, height))
+    out = cv2.VideoWriter(str(output_path), fourcc, args.fps, (width, height))
     
     if not out.isOpened():
         print(f"❌ 错误: 无法创建输出视频文件")
         cap.release()
         return
     
-    # 处理每一帧
+    # 处理每一帧 - 直接一一对应
+    # 视频的第N帧对应 chunk_id = N // steps_per_chunk, timestep = N % steps_per_chunk
     frame_idx = 0
-    written_frames = 0
-    current_chunk_idx = 0
-    current_timestep = 0
+    matched_frames = 0
+    unmatched_frames = 0
     
     pbar = tqdm(total=total_frames, desc="处理进度")
     
@@ -336,55 +341,58 @@ def main():
         if not ret:
             break
         
-        if frame_idx % frame_skip == 0:
-            vis_frame = frame.copy()
-            key = (current_chunk_idx, current_timestep)
+        vis_frame = frame.copy()
+        
+        # 根据帧索引计算对应的 chunk_id 和 timestep
+        current_chunk_idx = frame_idx // args.steps_per_chunk
+        current_timestep = frame_idx % args.steps_per_chunk
+        key = (current_chunk_idx, current_timestep)
+        
+        if key in retarget_data:
+            left_pose, right_pose = retarget_data[key]
             
-            if key in retarget_data:
-                left_pose, right_pose = retarget_data[key]
-                
-                # 绘制左手wrist pose
-                draw_wrist_pose(
-                    vis_frame,
-                    left_pose['pos'],
-                    left_pose['rotvec'],
-                    camera_intrinsics,
-                    COLOR_LEFT_WRIST,
-                    args.axis_length,
-                    args.thickness,
-                    "L_wrist"
-                )
-                
-                # 绘制右手wrist pose
-                draw_wrist_pose(
-                    vis_frame,
-                    right_pose['pos'],
-                    right_pose['rotvec'],
-                    camera_intrinsics,
-                    COLOR_RIGHT_WRIST,
-                    args.axis_length,
-                    args.thickness,
-                    "R_wrist"
-                )
-                
-                # 添加信息文本
-                info_text = f"Chunk {current_chunk_idx} | Step {current_timestep} | Frame {frame_idx}"
-                cv2.putText(vis_frame, info_text, (10, 30),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
-            else:
-                # 如果找不到对应的数据
-                cv2.putText(vis_frame, f"No data for Chunk {current_chunk_idx}, Step {current_timestep}",
-                           (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+            # 绘制左手wrist pose
+            draw_wrist_pose(
+                vis_frame,
+                left_pose['pos'],
+                left_pose['rotvec'],
+                camera_intrinsics,
+                COLOR_LEFT_WRIST,
+                args.axis_length,
+                args.thickness,
+                "L_wrist"
+            )
             
-            # 写入输出视频
-            out.write(vis_frame)
-            written_frames += 1
+            # 绘制右手wrist pose
+            draw_wrist_pose(
+                vis_frame,
+                right_pose['pos'],
+                right_pose['rotvec'],
+                camera_intrinsics,
+                COLOR_RIGHT_WRIST,
+                args.axis_length,
+                args.thickness,
+                "R_wrist"
+            )
             
-            # 更新chunk和timestep索引
-            current_timestep += 1
-            if current_timestep >= 16:  # 每个chunk有16个timestep
-                current_timestep = 0
-                current_chunk_idx += 1
+            matched_frames += 1
+        else:
+            unmatched_frames += 1
+        
+        # 添加信息文本（右上角显示）
+        info_text = f"Chunk {current_chunk_idx} | Step {current_timestep} | Frame {frame_idx}"
+        (text_w, text_h), _ = cv2.getTextSize(info_text, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
+        cv2.putText(vis_frame, info_text, (width - text_w - 10, 30),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        
+        if key not in retarget_data:
+            no_data_text = "No retarget data"
+            (nd_w, _), _ = cv2.getTextSize(no_data_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+            cv2.putText(vis_frame, no_data_text,
+                       (width - nd_w - 10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+        
+        # 写入输出视频
+        out.write(vis_frame)
         
         frame_idx += 1
         pbar.update(1)
@@ -394,8 +402,10 @@ def main():
     out.release()
     
     print(f"\n✓ 处理完成!")
-    print(f"  输入帧数: {total_frames} ({input_fps:.2f} fps)")
-    print(f"  输出帧数: {written_frames} ({actual_output_fps:.2f} fps)")
+    print(f"  总帧数: {frame_idx}")
+    print(f"  匹配成功: {matched_frames} 帧")
+    print(f"  匹配失败: {unmatched_frames} 帧")
+    print(f"  输出FPS: {args.fps}")
     print(f"  输出文件: {output_path}")
     print("\n" + "=" * 80)
 

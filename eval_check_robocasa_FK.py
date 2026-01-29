@@ -57,7 +57,7 @@ def build_44dof_vector(left_arm, right_arm, waist, left_finger, right_finger):
 
 def main():
     # 文件路径
-    input_file = Path("/vla/users/lijiayi/code/groot_retarget/output_video_record/robocasa_action_20260126_171642.txt")
+    input_file = Path("/vla/users/lijiayi/code/groot_retarget/output_video_record/robocasa_action_20260128_202351.txt")
     output_file = Path("/vla/users/lijiayi/code/groot_retarget/output_video_record/FK_check.txt")
     urdf_path = Path("/vla/users/lijiayi/code/groot_retarget/gr00t/eval/robot_assets/GR1T2/urdf/GR1T2_fourier_hand_6dof.urdf")
     

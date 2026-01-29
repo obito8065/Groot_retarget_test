@@ -149,15 +149,11 @@ def visualize_ik_trajectory(log_file, output_path=None):
               f"时间戳范围 [{timestamps_input[start_idx]:.6f}, {timestamps_input[end_idx-1]:.6f}], "
               f"跨度 {timestamps_input[end_idx-1] - timestamps_input[start_idx]:.6f} 秒")
     
-    # 使用全局时间步索引作为x轴（0, 1, 2, ..., N-1），确保每个点都有唯一位置
-    # 这样可以看到每个时间步的详细变化，不会因为时间戳太接近而重叠
-    time_step_indices = np.arange(len(timestamps_input))
-    
-    # 同时保留相对时间戳信息（用于参考）
+    # 将时间戳转换为相对时间（从0开始，以秒为单位）
+    # IK输入使用输入时间戳，IK输出使用输出时间戳
     timestamps_input_relative = timestamps_input - timestamps_input[0]  # 相对时间（秒）
     timestamps_output_relative = timestamps_output - timestamps_output[0]  # 相对时间（秒）
     
-    print(f"  使用全局时间步索引作为x轴: 0 到 {len(time_step_indices)-1}")
     print(f"  相对时间范围（输入）: [{timestamps_input_relative[0]:.6f}, {timestamps_input_relative[-1]:.6f}] 秒")
     print(f"  相对时间范围（输出）: [{timestamps_output_relative[0]:.6f}, {timestamps_output_relative[-1]:.6f}] 秒")
     
@@ -170,145 +166,143 @@ def visualize_ik_trajectory(log_file, output_path=None):
     fig.suptitle('IK Input vs Output Trajectory Comparison - All Angles on Same Scale', fontsize=16, fontweight='bold')
     
     # ========== 第1行：IK输入的rotvec（轴角）==========
-    # 左手 - IK输入（使用全局时间步索引）
+    # 左手 - IK输入（使用输入时间戳）
     ax = axes[0, 0]
-    ax.scatter(time_step_indices, left_ik_input_rotvec[:, 0], c='red', s=80, alpha=0.8, marker='o', label='rotvec_x', zorder=5, edgecolors='darkred', linewidths=1)
-    ax.scatter(time_step_indices, left_ik_input_rotvec[:, 1], c='green', s=80, alpha=0.8, marker='s', label='rotvec_y', zorder=5, edgecolors='darkgreen', linewidths=1)
-    ax.scatter(time_step_indices, left_ik_input_rotvec[:, 2], c='blue', s=80, alpha=0.8, marker='^', label='rotvec_z', zorder=5, edgecolors='darkblue', linewidths=1)
-    ax.plot(time_step_indices, left_ik_input_rotvec[:, 0], 'r-', linewidth=2, alpha=0.5)
-    ax.plot(time_step_indices, left_ik_input_rotvec[:, 1], 'g-', linewidth=2, alpha=0.5)
-    ax.plot(time_step_indices, left_ik_input_rotvec[:, 2], 'b-', linewidth=2, alpha=0.5)
+    ax.scatter(timestamps_input_relative, left_ik_input_rotvec[:, 0], c='red', s=50, alpha=0.7, marker='o', label='rotvec_x', zorder=5, edgecolors='darkred', linewidths=0.5)
+    ax.scatter(timestamps_input_relative, left_ik_input_rotvec[:, 1], c='green', s=50, alpha=0.7, marker='s', label='rotvec_y', zorder=5, edgecolors='darkgreen', linewidths=0.5)
+    ax.scatter(timestamps_input_relative, left_ik_input_rotvec[:, 2], c='blue', s=50, alpha=0.7, marker='^', label='rotvec_z', zorder=5, edgecolors='darkblue', linewidths=0.5)
+    ax.plot(timestamps_input_relative, left_ik_input_rotvec[:, 0], 'r-', linewidth=1.5, alpha=0.4)
+    ax.plot(timestamps_input_relative, left_ik_input_rotvec[:, 1], 'g-', linewidth=1.5, alpha=0.4)
+    ax.plot(timestamps_input_relative, left_ik_input_rotvec[:, 2], 'b-', linewidth=1.5, alpha=0.4)
     ax.set_ylabel('Left IK Input\nRotvec (rad)', fontsize=11)
     ax.set_title('Left Arm - IK Input Rotvec (Before IK)', fontsize=12, fontweight='bold')
     ax.grid(True, alpha=0.3)
     ax.legend(loc='best', fontsize=8)
-    ax.set_xlabel('Global Time Step Index', fontsize=10)
-    ax.set_xticks(time_step_indices[::max(1, len(time_step_indices)//20)])  # 每N个显示一个刻度
+    ax.set_xlabel('Relative Time (seconds) - IK Input Timestamp', fontsize=10)
+    # 设置x轴刻度，确保能看到所有数据点
+    ax.tick_params(axis='x', rotation=45)
     
-    # 右手 - IK输入（使用全局时间步索引）
+    # 右手 - IK输入（使用输入时间戳）
     ax = axes[0, 1]
-    ax.scatter(time_step_indices, right_ik_input_rotvec[:, 0], c='red', s=80, alpha=0.8, marker='o', label='rotvec_x', zorder=5, edgecolors='darkred', linewidths=1)
-    ax.scatter(time_step_indices, right_ik_input_rotvec[:, 1], c='green', s=80, alpha=0.8, marker='s', label='rotvec_y', zorder=5, edgecolors='darkgreen', linewidths=1)
-    ax.scatter(time_step_indices, right_ik_input_rotvec[:, 2], c='blue', s=80, alpha=0.8, marker='^', label='rotvec_z', zorder=5, edgecolors='darkblue', linewidths=1)
-    ax.plot(time_step_indices, right_ik_input_rotvec[:, 0], 'r-', linewidth=2, alpha=0.5)
-    ax.plot(time_step_indices, right_ik_input_rotvec[:, 1], 'g-', linewidth=2, alpha=0.5)
-    ax.plot(time_step_indices, right_ik_input_rotvec[:, 2], 'b-', linewidth=2, alpha=0.5)
+    ax.scatter(timestamps_input_relative, right_ik_input_rotvec[:, 0], c='red', s=50, alpha=0.7, marker='o', label='rotvec_x', zorder=5, edgecolors='darkred', linewidths=0.5)
+    ax.scatter(timestamps_input_relative, right_ik_input_rotvec[:, 1], c='green', s=50, alpha=0.7, marker='s', label='rotvec_y', zorder=5, edgecolors='darkgreen', linewidths=0.5)
+    ax.scatter(timestamps_input_relative, right_ik_input_rotvec[:, 2], c='blue', s=50, alpha=0.7, marker='^', label='rotvec_z', zorder=5, edgecolors='darkblue', linewidths=0.5)
+    ax.plot(timestamps_input_relative, right_ik_input_rotvec[:, 0], 'r-', linewidth=1.5, alpha=0.4)
+    ax.plot(timestamps_input_relative, right_ik_input_rotvec[:, 1], 'g-', linewidth=1.5, alpha=0.4)
+    ax.plot(timestamps_input_relative, right_ik_input_rotvec[:, 2], 'b-', linewidth=1.5, alpha=0.4)
     ax.set_ylabel('Right IK Input\nRotvec (rad)', fontsize=11)
     ax.set_title('Right Arm - IK Input Rotvec (Before IK)', fontsize=12, fontweight='bold')
     ax.grid(True, alpha=0.3)
     ax.legend(loc='best', fontsize=8)
-    ax.set_xlabel('Global Time Step Index', fontsize=10)
-    ax.set_xticks(time_step_indices[::max(1, len(time_step_indices)//20)])  # 每N个显示一个刻度
+    ax.set_xlabel('Relative Time (seconds) - IK Input Timestamp', fontsize=10)
+    # 设置x轴刻度，确保能看到所有数据点
+    ax.tick_params(axis='x', rotation=45)
     
     # ========== 第2行：IK输出的arm joints（7个关节）==========
     joint_names = ['q1', 'q2', 'q3', 'q4', 'q5', 'q6', 'q7']
     colors = plt.cm.tab10(np.linspace(0, 1, 7))
     
-    # 左手 - IK输出（使用全局时间步索引）
+    # 左手 - IK输出（使用输出时间戳）
     ax = axes[1, 0]
     for i in range(7):
-        ax.scatter(time_step_indices, left_ik_output[:, i], c=[colors[i]], s=80, alpha=0.8, 
-                  marker='o', label=f'Joint {joint_names[i]}', zorder=5, edgecolors='black', linewidths=0.5)
-        ax.plot(time_step_indices, left_ik_output[:, i], '-', color=colors[i], linewidth=2, alpha=0.5)
+        ax.scatter(timestamps_output_relative, left_ik_output[:, i], c=[colors[i]], s=50, alpha=0.7, 
+                  marker='o', label=f'Joint {joint_names[i]}', zorder=5, edgecolors='black', linewidths=0.3)
+        ax.plot(timestamps_output_relative, left_ik_output[:, i], '-', color=colors[i], linewidth=1.5, alpha=0.4)
     ax.set_ylabel('Left IK Output\nArm Joint Angles (rad)', fontsize=11)
     ax.set_title('Left Arm - IK Output Joint Angles (After IK)', fontsize=12, fontweight='bold')
     ax.grid(True, alpha=0.3)
     ax.legend(loc='best', fontsize=7, ncol=2)
-    ax.set_xlabel('Global Time Step Index', fontsize=10)
-    ax.set_xticks(time_step_indices[::max(1, len(time_step_indices)//20)])  # 每N个显示一个刻度
+    ax.set_xlabel('Relative Time (seconds) - IK Output Timestamp', fontsize=10)
+    ax.tick_params(axis='x', rotation=45)
     
-    # 右手 - IK输出（使用全局时间步索引）
+    # 右手 - IK输出（使用输出时间戳）
     ax = axes[1, 1]
     for i in range(7):
-        ax.scatter(time_step_indices, right_ik_output[:, i], c=[colors[i]], s=80, alpha=0.8, 
-                  marker='o', label=f'Joint {joint_names[i]}', zorder=5, edgecolors='black', linewidths=0.5)
-        ax.plot(time_step_indices, right_ik_output[:, i], '-', color=colors[i], linewidth=2, alpha=0.5)
+        ax.scatter(timestamps_output_relative, right_ik_output[:, i], c=[colors[i]], s=50, alpha=0.7, 
+                  marker='o', label=f'Joint {joint_names[i]}', zorder=5, edgecolors='black', linewidths=0.3)
+        ax.plot(timestamps_output_relative, right_ik_output[:, i], '-', color=colors[i], linewidth=1.5, alpha=0.4)
     ax.set_ylabel('Right IK Output\nArm Joint Angles (rad)', fontsize=11)
     ax.set_title('Right Arm - IK Output Joint Angles (After IK)', fontsize=12, fontweight='bold')
     ax.grid(True, alpha=0.3)
     ax.legend(loc='best', fontsize=7, ncol=2)
-    ax.set_xlabel('Global Time Step Index', fontsize=10)
-    ax.set_xticks(time_step_indices[::max(1, len(time_step_indices)//20)])  # 每N个显示一个刻度
+    ax.set_xlabel('Relative Time (seconds) - IK Output Timestamp', fontsize=10)
+    ax.tick_params(axis='x', rotation=45)
     
     # ========== 第3行：IK输入的位置（xyz，用于参考）==========
-    # 左手 - IK输入位置（使用全局时间步索引）
+    # 左手 - IK输入位置（使用输入时间戳）
     ax = axes[2, 0]
-    ax.scatter(time_step_indices, left_ik_input_pos[:, 0], c='red', s=80, alpha=0.8, marker='o', label='pos_x', zorder=5, edgecolors='darkred', linewidths=1)
-    ax.scatter(time_step_indices, left_ik_input_pos[:, 1], c='green', s=80, alpha=0.8, marker='s', label='pos_y', zorder=5, edgecolors='darkgreen', linewidths=1)
-    ax.scatter(time_step_indices, left_ik_input_pos[:, 2], c='blue', s=80, alpha=0.8, marker='^', label='pos_z', zorder=5, edgecolors='darkblue', linewidths=1)
-    ax.plot(time_step_indices, left_ik_input_pos[:, 0], 'r-', linewidth=2, alpha=0.5)
-    ax.plot(time_step_indices, left_ik_input_pos[:, 1], 'g-', linewidth=2, alpha=0.5)
-    ax.plot(time_step_indices, left_ik_input_pos[:, 2], 'b-', linewidth=2, alpha=0.5)
+    ax.scatter(timestamps_input_relative, left_ik_input_pos[:, 0], c='red', s=30, alpha=0.6, marker='o', label='pos_x', zorder=5)
+    ax.scatter(timestamps_input_relative, left_ik_input_pos[:, 1], c='green', s=30, alpha=0.6, marker='s', label='pos_y', zorder=5)
+    ax.scatter(timestamps_input_relative, left_ik_input_pos[:, 2], c='blue', s=30, alpha=0.6, marker='^', label='pos_z', zorder=5)
+    ax.plot(timestamps_input_relative, left_ik_input_pos[:, 0], 'r-', linewidth=1, alpha=0.3)
+    ax.plot(timestamps_input_relative, left_ik_input_pos[:, 1], 'g-', linewidth=1, alpha=0.3)
+    ax.plot(timestamps_input_relative, left_ik_input_pos[:, 2], 'b-', linewidth=1, alpha=0.3)
     ax.set_ylabel('Left IK Input\nPosition (m)', fontsize=11)
     ax.set_title('Left Arm - IK Input Position (Reference)', fontsize=12, fontweight='bold')
     ax.grid(True, alpha=0.3)
     ax.legend(loc='best', fontsize=8)
-    ax.set_xlabel('Global Time Step Index', fontsize=10)
-    ax.set_xticks(time_step_indices[::max(1, len(time_step_indices)//20)])  # 每N个显示一个刻度
+    ax.set_xlabel('Relative Time (seconds) - IK Input Timestamp', fontsize=10)
     
-    # 右手 - IK输入位置（使用全局时间步索引）
+    # 右手 - IK输入位置（使用输入时间戳）
     ax = axes[2, 1]
-    ax.scatter(time_step_indices, right_ik_input_pos[:, 0], c='red', s=80, alpha=0.8, marker='o', label='pos_x', zorder=5, edgecolors='darkred', linewidths=1)
-    ax.scatter(time_step_indices, right_ik_input_pos[:, 1], c='green', s=80, alpha=0.8, marker='s', label='pos_y', zorder=5, edgecolors='darkgreen', linewidths=1)
-    ax.scatter(time_step_indices, right_ik_input_pos[:, 2], c='blue', s=80, alpha=0.8, marker='^', label='pos_z', zorder=5, edgecolors='darkblue', linewidths=1)
-    ax.plot(time_step_indices, right_ik_input_pos[:, 0], 'r-', linewidth=2, alpha=0.5)
-    ax.plot(time_step_indices, right_ik_input_pos[:, 1], 'g-', linewidth=2, alpha=0.5)
-    ax.plot(time_step_indices, right_ik_input_pos[:, 2], 'b-', linewidth=2, alpha=0.5)
+    ax.scatter(timestamps_input_relative, right_ik_input_pos[:, 0], c='red', s=30, alpha=0.6, marker='o', label='pos_x', zorder=5)
+    ax.scatter(timestamps_input_relative, right_ik_input_pos[:, 1], c='green', s=30, alpha=0.6, marker='s', label='pos_y', zorder=5)
+    ax.scatter(timestamps_input_relative, right_ik_input_pos[:, 2], c='blue', s=30, alpha=0.6, marker='^', label='pos_z', zorder=5)
+    ax.plot(timestamps_input_relative, right_ik_input_pos[:, 0], 'r-', linewidth=1, alpha=0.3)
+    ax.plot(timestamps_input_relative, right_ik_input_pos[:, 1], 'g-', linewidth=1, alpha=0.3)
+    ax.plot(timestamps_input_relative, right_ik_input_pos[:, 2], 'b-', linewidth=1, alpha=0.3)
     ax.set_ylabel('Right IK Input\nPosition (m)', fontsize=11)
     ax.set_title('Right Arm - IK Input Position (Reference)', fontsize=12, fontweight='bold')
     ax.grid(True, alpha=0.3)
     ax.legend(loc='best', fontsize=8)
-    ax.set_xlabel('Global Time Step Index', fontsize=10)
-    ax.set_xticks(time_step_indices[::max(1, len(time_step_indices)//20)])  # 每N个显示一个刻度
+    ax.set_xlabel('Relative Time (seconds) - IK Input Timestamp', fontsize=10)
     
     # ========== 第4行：所有角度对比（IK输入rotvec + IK输出joints）==========
-    # 左手：将所有角度放在同一张图上（使用全局时间步索引）
+    # 左手：将所有角度放在同一张图上（注意：IK输入使用输入时间戳，IK输出使用输出时间戳）
     ax = axes[3, 0]
-    # IK输入的rotvec（使用全局时间步索引）
-    ax.scatter(time_step_indices, left_ik_input_rotvec[:, 0], c='red', s=60, alpha=0.7, marker='o', label='IK_input_rotvec_x', zorder=5, edgecolors='darkred', linewidths=0.8)
-    ax.scatter(time_step_indices, left_ik_input_rotvec[:, 1], c='green', s=60, alpha=0.7, marker='s', label='IK_input_rotvec_y', zorder=5, edgecolors='darkgreen', linewidths=0.8)
-    ax.scatter(time_step_indices, left_ik_input_rotvec[:, 2], c='blue', s=60, alpha=0.7, marker='^', label='IK_input_rotvec_z', zorder=5, edgecolors='darkblue', linewidths=0.8)
-    ax.plot(time_step_indices, left_ik_input_rotvec[:, 0], 'r-', linewidth=1.5, alpha=0.4)
-    ax.plot(time_step_indices, left_ik_input_rotvec[:, 1], 'g-', linewidth=1.5, alpha=0.4)
-    ax.plot(time_step_indices, left_ik_input_rotvec[:, 2], 'b-', linewidth=1.5, alpha=0.4)
+    # IK输入的rotvec（使用输入时间戳）
+    ax.scatter(timestamps_input_relative, left_ik_input_rotvec[:, 0], c='red', s=20, alpha=0.5, marker='o', label='IK_input_rotvec_x', zorder=5)
+    ax.scatter(timestamps_input_relative, left_ik_input_rotvec[:, 1], c='green', s=20, alpha=0.5, marker='s', label='IK_input_rotvec_y', zorder=5)
+    ax.scatter(timestamps_input_relative, left_ik_input_rotvec[:, 2], c='blue', s=20, alpha=0.5, marker='^', label='IK_input_rotvec_z', zorder=5)
+    ax.plot(timestamps_input_relative, left_ik_input_rotvec[:, 0], 'r-', linewidth=1, alpha=0.2)
+    ax.plot(timestamps_input_relative, left_ik_input_rotvec[:, 1], 'g-', linewidth=1, alpha=0.2)
+    ax.plot(timestamps_input_relative, left_ik_input_rotvec[:, 2], 'b-', linewidth=1, alpha=0.2)
     
-    # IK输出的joints（使用全局时间步索引）
+    # IK输出的joints（使用输出时间戳）
     colors_joints = plt.cm.tab10(np.linspace(0, 1, 7))
     markers_joints = ['x', '+', '*', 'd', 'v', '<', '>']
     for i in range(7):
-        ax.scatter(time_step_indices, left_ik_output[:, i], c=[colors_joints[i]], s=60, alpha=0.7, 
-                  marker=markers_joints[i], label=f'IK_output_q{i+1}', zorder=5, edgecolors='black', linewidths=0.5)
-        ax.plot(time_step_indices, left_ik_output[:, i], '-', color=colors_joints[i], linewidth=1.5, alpha=0.4)
+        ax.scatter(timestamps_output_relative, left_ik_output[:, i], c=[colors_joints[i]], s=20, alpha=0.5, 
+                  marker=markers_joints[i], label=f'IK_output_q{i+1}', zorder=5)
+        ax.plot(timestamps_output_relative, left_ik_output[:, i], '-', color=colors_joints[i], linewidth=1, alpha=0.2)
     
     ax.set_ylabel('Left Arm - All Angles (rad)', fontsize=11)
-    ax.set_title('Left Arm - IK Input Rotvec + IK Output Joints', fontsize=12, fontweight='bold')
+    ax.set_title('Left Arm - IK Input Rotvec (input ts) + IK Output Joints (output ts)', fontsize=12, fontweight='bold')
     ax.grid(True, alpha=0.3)
     ax.legend(loc='best', fontsize=6, ncol=2)
-    ax.set_xlabel('Global Time Step Index', fontsize=10)
-    ax.set_xticks(time_step_indices[::max(1, len(time_step_indices)//20)])  # 每N个显示一个刻度
+    ax.set_xlabel('Relative Time (seconds) - Different Timestamps for Input/Output', fontsize=10)
     
-    # 右手：将所有角度放在同一张图上（使用全局时间步索引）
+    # 右手：将所有角度放在同一张图上（注意：IK输入使用输入时间戳，IK输出使用输出时间戳）
     ax = axes[3, 1]
-    # IK输入的rotvec（使用全局时间步索引）
-    ax.scatter(time_step_indices, right_ik_input_rotvec[:, 0], c='red', s=60, alpha=0.7, marker='o', label='IK_input_rotvec_x', zorder=5, edgecolors='darkred', linewidths=0.8)
-    ax.scatter(time_step_indices, right_ik_input_rotvec[:, 1], c='green', s=60, alpha=0.7, marker='s', label='IK_input_rotvec_y', zorder=5, edgecolors='darkgreen', linewidths=0.8)
-    ax.scatter(time_step_indices, right_ik_input_rotvec[:, 2], c='blue', s=60, alpha=0.7, marker='^', label='IK_input_rotvec_z', zorder=5, edgecolors='darkblue', linewidths=0.8)
-    ax.plot(time_step_indices, right_ik_input_rotvec[:, 0], 'r-', linewidth=1.5, alpha=0.4)
-    ax.plot(time_step_indices, right_ik_input_rotvec[:, 1], 'g-', linewidth=1.5, alpha=0.4)
-    ax.plot(time_step_indices, right_ik_input_rotvec[:, 2], 'b-', linewidth=1.5, alpha=0.4)
+    # IK输入的rotvec（使用输入时间戳）
+    ax.scatter(timestamps_input_relative, right_ik_input_rotvec[:, 0], c='red', s=20, alpha=0.5, marker='o', label='IK_input_rotvec_x', zorder=5)
+    ax.scatter(timestamps_input_relative, right_ik_input_rotvec[:, 1], c='green', s=20, alpha=0.5, marker='s', label='IK_input_rotvec_y', zorder=5)
+    ax.scatter(timestamps_input_relative, right_ik_input_rotvec[:, 2], c='blue', s=20, alpha=0.5, marker='^', label='IK_input_rotvec_z', zorder=5)
+    ax.plot(timestamps_input_relative, right_ik_input_rotvec[:, 0], 'r-', linewidth=1, alpha=0.2)
+    ax.plot(timestamps_input_relative, right_ik_input_rotvec[:, 1], 'g-', linewidth=1, alpha=0.2)
+    ax.plot(timestamps_input_relative, right_ik_input_rotvec[:, 2], 'b-', linewidth=1, alpha=0.2)
     
-    # IK输出的joints（使用全局时间步索引）
+    # IK输出的joints（使用输出时间戳）
     for i in range(7):
-        ax.scatter(time_step_indices, right_ik_output[:, i], c=[colors_joints[i]], s=60, alpha=0.7, 
-                  marker=markers_joints[i], label=f'IK_output_q{i+1}', zorder=5, edgecolors='black', linewidths=0.5)
-        ax.plot(time_step_indices, right_ik_output[:, i], '-', color=colors_joints[i], linewidth=1.5, alpha=0.4)
+        ax.scatter(timestamps_output_relative, right_ik_output[:, i], c=[colors_joints[i]], s=20, alpha=0.5, 
+                  marker=markers_joints[i], label=f'IK_output_q{i+1}', zorder=5)
+        ax.plot(timestamps_output_relative, right_ik_output[:, i], '-', color=colors_joints[i], linewidth=1, alpha=0.2)
     
     ax.set_ylabel('Right Arm - All Angles (rad)', fontsize=11)
-    ax.set_title('Right Arm - IK Input Rotvec + IK Output Joints', fontsize=12, fontweight='bold')
+    ax.set_title('Right Arm - IK Input Rotvec (input ts) + IK Output Joints (output ts)', fontsize=12, fontweight='bold')
     ax.grid(True, alpha=0.3)
     ax.legend(loc='best', fontsize=6, ncol=2)
-    ax.set_xlabel('Global Time Step Index', fontsize=10)
-    ax.set_xticks(time_step_indices[::max(1, len(time_step_indices)//20)])  # 每N个显示一个刻度
+    ax.set_xlabel('Relative Time (seconds) - Different Timestamps for Input/Output', fontsize=10)
     
     plt.tight_layout()
     

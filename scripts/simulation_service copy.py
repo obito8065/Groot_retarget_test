@@ -94,13 +94,11 @@ if __name__ == "__main__":
     # 仿真评测任务的每个episode的随机种子起始值
     parser.add_argument("--episode_seed_start", type=int, default=0)
 
-    # 新增：保存带有 chunk/step 标注的 substep 视频（用于验证重投影）
     parser.add_argument(
-        "--save_substep_video",
-        action="store_true",
-        help="Save a video with chunk/step annotations at each substep"
+        "--ignore_done", 
+        action="store_true", 
+        help="Ignore collision failures in the environment"
     )
-
 
     args = parser.parse_args()
 
@@ -135,11 +133,10 @@ if __name__ == "__main__":
             n_envs=args.n_envs,
             video=VideoConfig(video_dir=args.video_dir),
             multistep=MultiStepConfig(
-                n_action_steps=args.n_action_steps, 
-                max_episode_steps=args.max_episode_steps,
-                save_substep_video=args.save_substep_video,
+                n_action_steps=args.n_action_steps, max_episode_steps=args.max_episode_steps
             ),
             # episode_seed_start=args.episode_seed_start, # 仿真评测任务的每个episode的随机种子起始值
+
         )
 
         # Run the simulation

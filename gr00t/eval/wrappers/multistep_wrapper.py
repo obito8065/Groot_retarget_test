@@ -14,6 +14,9 @@
 # limitations under the License.
 
 from collections import defaultdict, deque
+from pathlib import Path
+from datetime import datetime
+import cv2
 
 import gymnasium as gym
 import numpy as np
@@ -86,15 +89,33 @@ class MultiStepWrapper(gym.Wrapper):
         n_action_steps,
         max_episode_steps=None,
         reward_agg_method="max",
+        save_substep_video: bool = False,
+        video_dir: str = None,
     ):
         """
         video_delta_indices: np.ndarray[int], please check `assert_delta_indices` to see the requirements
         state_delta_indices: np.ndarray[int] | None, please check `assert_delta_indices` to see the requirements
           if None, it means the model is vision-only
+        save_substep_video: bool, if True, save a video with chunk/step annotations
+        video_dir: str, directory to save substep video
         """
         super().__init__(env)
         # Assign action space
         self._action_space = repeated_space(env.action_space, n_action_steps)
+        
+        # === 新增：保存带有 chunk/step 标注的 substep 视频 ===
+        self.save_substep_video = save_substep_video
+        self.video_dir = video_dir
+        self._substep_counter = 0  # 全局 substep 计数器
+        self._chunk_counter = 0    # chunk 计数器
+        self._episode_counter = 0  # episode 计数器
+        self._video_writer = None  # 视频写入器
+        self._video_fps = 30       # 视频帧率
+        
+        if self.save_substep_video and self.video_dir:
+            self._video_dir_path = Path(self.video_dir)
+            self._video_dir_path.mkdir(parents=True, exist_ok=True)
+            print(f"[MultiStepWrapper] 将保存 substep 视频到: {self._video_dir_path}")
 
         # Assign delta indices and horizons
         self.video_delta_indices = video_delta_indices
@@ -184,9 +205,122 @@ class MultiStepWrapper(gym.Wrapper):
             # And the step is positive
             assert (delta_indices[1] - delta_indices[0]) > 0, f"{delta_indices=}"
 
+    def _init_video_writer(self, frame_shape):
+        """
+        初始化视频写入器。
+        
+        Args:
+            frame_shape: 帧的形状 (H, W, C)
+        """
+        if self._video_writer is not None:
+            self._release_video_writer()
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        video_filename = f"substep_video_ep{self._episode_counter:03d}_{timestamp}.mp4"
+        video_path = self._video_dir_path / video_filename
+        
+        h, w = frame_shape[:2]
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        self._video_writer = cv2.VideoWriter(str(video_path), fourcc, self._video_fps, (w, h))
+        print(f"[MultiStepWrapper] 开始录制视频: {video_path}")
+    
+    def _release_video_writer(self):
+        """
+        释放视频写入器，保存视频文件。
+        """
+        if self._video_writer is not None:
+            self._video_writer.release()
+            self._video_writer = None
+            print(f"[MultiStepWrapper] 视频录制完成")
+    
+    def _save_substep_image(self, observation: dict, chunk_id: int, substep_id: int):
+        """
+        保存每个 substep 的 observation 图像到视频，并在左上角标注 chunk 和 step 信息。
+        
+        Args:
+            observation: 当前 step 的 observation 字典
+            chunk_id: 当前 chunk 的 ID
+            substep_id: 当前 substep 的 ID (0 ~ n_action_steps-1)
+        """
+        try:
+            # 优先使用原始 1280x800 图像 (video.egoview)
+            # 如果没有则使用处理后的 256x256 图像
+            if 'video.egoview' in observation:
+                img = observation['video.egoview']
+            else:
+                # 回退到其他 video key
+                ego_view_key = None
+                for key in observation.keys():
+                    if 'ego_view' in key.lower() or 'video' in key.lower():
+                        ego_view_key = key
+                        break
+                
+                if ego_view_key is None:
+                    return
+                
+                img = observation[ego_view_key]
+            
+            # 处理可能的维度问题
+            if img.ndim == 4:  # (B, H, W, C) 或 (T, H, W, C)
+                img = img[0]
+            
+            # 确保是 uint8 格式
+            if img.dtype != np.uint8:
+                if img.max() <= 1.0:
+                    img = (img * 255).astype(np.uint8)
+                else:
+                    img = img.astype(np.uint8)
+            
+            # 如果是 RGB，转换为 BGR（OpenCV 使用 BGR）
+            if img.shape[-1] == 3:
+                img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+            
+            # 初始化视频写入器（第一帧时）
+            if self._video_writer is None:
+                self._init_video_writer(img.shape)
+            
+            # 在图像左上角添加文字标注
+            img_with_text = img.copy()
+            text = f"Chunk: {chunk_id:04d}  Step: {substep_id:02d}"
+            
+            # 根据图像尺寸调整字体大小
+            h, w = img_with_text.shape[:2]
+            font_scale = max(0.5, min(h, w) / 400)  # 根据图像尺寸自适应
+            thickness = max(1, int(font_scale * 2))
+            
+            # 添加黑色背景矩形，使文字更清晰
+            (text_w, text_h), baseline = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
+            cv2.rectangle(img_with_text, (5, 5), (15 + text_w, 15 + text_h + baseline), (0, 0, 0), -1)
+            
+            # 添加白色文字
+            cv2.putText(
+                img_with_text, 
+                text, 
+                (10, 10 + text_h), 
+                cv2.FONT_HERSHEY_SIMPLEX, 
+                font_scale, 
+                (255, 255, 255), 
+                thickness
+            )
+            
+            # 写入视频帧
+            self._video_writer.write(img_with_text)
+            
+        except Exception as e:
+            print(f"[MultiStepWrapper] 保存 substep 图像失败: {e}")
+
     def reset(self, seed=None, options=None):
         """Resets the environment using kwargs."""
         obs, info = super().reset(seed=seed, options=options)
+        
+        # 保存上一个 episode 的视频（如果有的话）
+        if self.save_substep_video and self._video_writer is not None:
+            self._release_video_writer()
+            self._episode_counter += 1
+        
+        # 重置 chunk 计数器（新 episode 开始）
+        self._chunk_counter = 0
+        self._substep_counter = 0
 
         self.obs = deque([obs] * (self.max_steps_needed + 1), maxlen=self.max_steps_needed + 1)
         self.reward = list()
@@ -212,6 +346,11 @@ class MultiStepWrapper(gym.Wrapper):
                 # termination
                 break
             observation, reward, done, truncated, info = super().step(act)
+            
+            # === 保存每个 substep 到视频 ===
+            if self.save_substep_video and self.video_dir:
+                self._save_substep_image(observation, self._chunk_counter, step)
+            
             env_state = {"states": [], "model": []}
             states.append(env_state["states"])
             rewards.append(reward)
@@ -225,6 +364,10 @@ class MultiStepWrapper(gym.Wrapper):
                 done = True
             self.done.append(done)
             self._add_info(info)
+            self._substep_counter += 1
+        
+        # 增加 chunk 计数器
+        self._chunk_counter += 1
 
         observation = self._get_obs(self.video_delta_indices, self.state_delta_indices)
         reward = aggregate(self.reward, self.reward_agg_method)
@@ -294,3 +437,10 @@ class MultiStepWrapper(gym.Wrapper):
         for k, v in self.info.items():
             result[k] = list(v)
         return result
+    
+    def close(self):
+        """关闭环境并释放资源。"""
+        # 保存最后一个 episode 的视频
+        if self.save_substep_video and self._video_writer is not None:
+            self._release_video_writer()
+        super().close()

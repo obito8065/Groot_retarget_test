@@ -159,7 +159,7 @@ def visualize_comparison(retarget_file, fk_file, output_path=None):
 if __name__ == "__main__":
     # 文件路径
     base_dir = Path("/vla/users/lijiayi/code/groot_retarget/output_video_record")
-    retarget_file = "/vla/users/lijiayi/code/groot_retarget/output_video_record/retargeted_actions_20260126_171642.txt"
+    retarget_file = "/vla/users/lijiayi/code/groot_retarget/output_video_record/retargeted_actions_20260128_202351.txt"
     fk_file = "/vla/users/lijiayi/code/groot_retarget/output_video_record/FK_check.txt"
     
     # 检查文件是否存在

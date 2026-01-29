@@ -20,7 +20,7 @@ class GR1RetargetConfig:
     """Main configuration for GR1 retarget."""
 
     urdf_path: str = str(
-        Path("/vla/users/lijiayi/code/groot_retarget/gr00t/eval/robot_assets/GR1T2/urdf/GR1T2_fourier_hand_6dof.urdf")
+        Path("/vla/users/lijiayi/code/robot_retarget/retarget/body_retarget/GR1T2/urdf/GR1T2_fourier_hand_6dof.urdf")
     )
     camera_intrinsics: dict = field(
         default_factory=lambda: {"fx": 502.8689, "fy": 502.8689, "cx": 640.0, "cy": 400.0}
@@ -105,44 +105,13 @@ class BodyRetargeter:
             "left_arm": self._compute_chain_max_reach(self.chain_left_arm),
             "right_arm": self._compute_chain_max_reach(self.chain_right_arm),
         }
-        # self._ik_last_solution = {name: None for name in self._chain_max_reach}
-
-        # === [FIX] last_solution 改为 dict bucket: env_idx -> {chain_label -> solution} ===
-        self._ik_last_solution = {}
+        self._ik_last_solution = {name: None for name in self._chain_max_reach}
         self._workspace_margin = 0.05
         self._ik_local_margin = np.deg2rad(90.0)
+
+        self._ik_damping = 1e-3 # IK 阻尼因子
         
         print("初始化完成。")
-
-    # 添加功能，为每个并行的n_episodes保存最后一个IK解算结果，防止因为其他一个IK求解成功后将其他解覆盖掉
-    # === [FIX] helper：确保每个 env_idx 有独立 bucket，避免 batch 覆盖 ===
-    def _ensure_env_bucket(self, env_idx: int):
-        env_idx = int(env_idx)
-        if env_idx not in self._ik_last_solution:
-            # 初始化该 env 的所有链 last_solution
-            self._ik_last_solution[env_idx] = {name: None for name in self._chain_max_reach}
-
-    def _get_last_solution(self, env_idx: int, chain_label: str):
-        self._ensure_env_bucket(env_idx)
-        return self._ik_last_solution[int(env_idx)].get(chain_label, None)
-
-    def _set_last_solution(self, env_idx: int, chain_label: str, sol):
-        self._ensure_env_bucket(env_idx)
-        self._ik_last_solution[int(env_idx)][chain_label] = sol
-
-    # === [FIX] 添加 reset_ik_cache 方法，用于清空 IK 历史缓存（last_solution） ===
-    def reset_ik_cache(self, env_idx: Optional[int] = None):
-        """
-        清空 IK 历史缓存（last_solution）。
-        - env_idx=None: 清空所有并行 env 的缓存
-        - env_idx=int : 只清空指定 env slot 的缓存
-        """
-        if env_idx is None:
-            self._ik_last_solution.clear()
-            return
-        self._ik_last_solution.pop(int(env_idx), None)
-
-
 
     def _create_transform(self, t: List[float], q: List[float]) -> np.ndarray:
         T = np.eye(4)
@@ -519,16 +488,9 @@ class BodyRetargeter:
             T_torso_to_right_hand = T_torso_to_head @ T_head_to_right_hand
             
             # === 步骤4: 使用 IK 求解器求解关节角度 ===
-            # q_left_arm = self._solve_ik(self.chain_left_arm, T_torso_to_left_hand, curr_q_init_left, chain_name="left_arm")
-            # q_right_arm = self._solve_ik(self.chain_right_arm, T_torso_to_right_hand, curr_q_init_right, chain_name="right_arm")
-            q_left_arm = self._solve_ik(
-                self.chain_left_arm, T_torso_to_left_hand, curr_q_init_left,
-                chain_name="left_arm", env_idx=i
-            )
-            q_right_arm = self._solve_ik(
-                self.chain_right_arm, T_torso_to_right_hand, curr_q_init_right,
-                chain_name="right_arm", env_idx=i
-            )
+            q_left_arm = self._solve_ik(self.chain_left_arm, T_torso_to_left_hand, curr_q_init_left, chain_name="left_arm")
+            q_right_arm = self._solve_ik(self.chain_right_arm, T_torso_to_right_hand, curr_q_init_right, chain_name="right_arm")
+            
             # 将结果添加到批次列表
             if q_left_arm is not None:
                 q_left_arm_batch.append(np.array(q_left_arm))
@@ -675,15 +637,15 @@ class BodyRetargeter:
         }
 
 
-        # print("original q_left_arm_original: ", q_left_arm_original)
-        # print("original q_right_arm_original: ", q_right_arm_original)
-        # print("ik q_left_arm_ik: ", q_left_arm_ik)
-        # print("ik q_right_arm_ik: ", q_right_arm_ik)
+        print("original q_left_arm_original: ", q_left_arm_original)
+        print("original q_right_arm_original: ", q_right_arm_original)
+        print("ik q_left_arm_ik: ", q_left_arm_ik)
+        print("ik q_right_arm_ik: ", q_right_arm_ik)
 
-        # print("T_torso_to_left_hand_verified: ", T_torso_to_left_hand_verified)
-        # print("T_torso_to_left_hand: ", T_torso_to_left_hand)
-        # print("T_torso_to_right_hand_verified: ", T_torso_to_right_hand_verified)
-        # print("T_torso_to_right_hand: ", T_torso_to_right_hand)
+        print("T_torso_to_left_hand_verified: ", T_torso_to_left_hand_verified)
+        print("T_torso_to_left_hand: ", T_torso_to_left_hand)
+        print("T_torso_to_right_hand_verified: ", T_torso_to_right_hand_verified)
+        print("T_torso_to_right_hand: ", T_torso_to_right_hand)
         
         if verbose:
             print("\n=== IK 验证结果 ===")
@@ -704,7 +666,6 @@ class BodyRetargeter:
         target_pose: np.ndarray,
         q_init: List[float],
         chain_name: str = "unnamed",
-        env_idx: int = 0,
     ) -> Optional[List[float]]:
         """
         使用 KDL IK 求解器求解逆向运动学。
@@ -717,17 +678,11 @@ class BodyRetargeter:
         
         返回:
             求解的关节角度；若常规 IK 失败，将返回兜底解（上一帧成功解或初始关节）
-
-        关键改动：
-            -  last_solution 按 env_idx 分桶保存：self._ik_last_solution[env_idx][chain_label]
         """
-
         chain_label = chain_name or "unnamed"
-        env_idx = int(env_idx)
         try:
-            # === [FIX] 确保该 env 的 bucket 存在 ===
-            self._ensure_env_bucket(env_idx)
-
+            if chain_label not in self._ik_last_solution:
+                self._ik_last_solution[chain_label] = None
             if chain_label not in self._chain_max_reach:
                 self._chain_max_reach[chain_label] = self._compute_chain_max_reach(chain)
 
@@ -744,27 +699,19 @@ class BodyRetargeter:
                 global_q_max[i] = 2.0 * np.pi
             q_init_full = [q_init[i] if i < len(q_init) else 0.0 for i in range(num_joints)]
             
-            # 先取“该 env 的 last_solution”作为最终兜底候选
-            last_sol = self._get_last_solution(env_idx, chain_label)
-        
             if not self._is_target_within_workspace(chain_label, target_pose):
-                 # 优先用 last_solution；否则用当前 q_init 做兜底
-                fallback_solution = last_sol
-                if fallback_solution is None:
-                    fallback_solution, reason = self._prepare_fallback_solution(
-                        chain_label, q_init, num_joints, global_q_min, global_q_max
-                    )
-                else:
-                    reason = "使用该 env 的上一帧 IK 解作为兜底"
+                fallback_solution, reason = self._prepare_fallback_solution(
+                    chain_label, q_init, num_joints, global_q_min, global_q_max
+                )
                 print(f"  目标超出 {chain_label} 工作空间，{reason}。")
-
-                self._set_last_solution(env_idx, chain_label, fallback_solution)
-
+                self._ik_last_solution[chain_label] = fallback_solution
                 return fallback_solution
             
             # 创建求解器所需组件
             fk_solver = kdl.ChainFkSolverPos_recursive(chain)
-            ik_vel_solver = kdl.ChainIkSolverVel_pinv(chain)
+            # ik_vel_solver = kdl.ChainIkSolverVel_pinv(chain)
+            ik_vel_solver = kdl.ChainIkSolverVel_wdls(chain) # 使用 PyKDL 内置的 WDLS（Weighted Damped Least Squares）求解器，支持阻尼
+            ik_vel_solver.setLambda(self._ik_damping)  # 设置阻尼因子，避免奇异点
 
             # 多次尝试以提高成功率
             max_attempts = 5
@@ -809,70 +756,35 @@ class BodyRetargeter:
 
                 if ret >= 0:
                     solution = [q_out[i] for i in range(num_joints)]
-                    # self._ik_last_solution[chain_label] = solution
-
-                    self._set_last_solution(env_idx, chain_label, solution)
+                    self._ik_last_solution[chain_label] = solution
                     return solution
 
-                # print(
-                #     f"  IK 求解失败（{chain_label}），第 {attempt + 1}/{max_attempts} 次尝试，"
-                #     f"返回码: {ret}，maxiter={maxiter}，eps={eps}"
-                # )
-
-            # 使用 LMA 求解器兜底
-            try:
-                lma_solver = kdl.ChainIkSolverPos_LMA(chain, eps=1e-4, maxiter=2000)
-                q_init_kdl = kdl.JntArray(num_joints)
-                for i in range(num_joints):
-                    init_val = q_init_full[i]
-                    q_init_kdl[i] = max(min(init_val, global_q_max[i]), global_q_min[i])
-                q_out = kdl.JntArray(num_joints)
-                ret = lma_solver.CartToJnt(q_init_kdl, target_frame, q_out)
-                if ret >= 0:
-                    solution = [q_out[i] for i in range(num_joints)]
-
-                    self._set_last_solution(env_idx, chain_label, solution)
-                    # self._ik_last_solution[chain_label] = solution
-                    # print(f"  LMA 求解器成功为 {chain_label} 找到解。")
-                    return solution
-                # print(f"  LMA 求解器仍失败（{chain_label}），返回码: {ret}")
-            except Exception as lma_err:
-                print(f"  LMA 求解器调用异常（{chain_label}）: {lma_err}")
-
-            # 最终兜底策略
-            # fallback_solution, reason = self._prepare_fallback_solution(
-            #     chain_label, q_init, num_joints, global_q_min, global_q_max
-            # )
-            # self._ik_last_solution[chain_label] = fallback_solution
-            # 最终兜底：优先 last_solution，否则用 q_init clip
-            fallback_solution = last_sol
-            if fallback_solution is None:
-                fallback_solution, _ = self._prepare_fallback_solution(
-                    chain_label, q_init, num_joints, global_q_min, global_q_max
+                print(
+                    f"  IK 求解失败（{chain_label}），第 {attempt + 1}/{max_attempts} 次尝试，"
+                    f"返回码: {ret}，maxiter={maxiter}，eps={eps}"
                 )
 
-            self._set_last_solution(env_idx, chain_label, fallback_solution)
-            # print(f"  IK 多次尝试仍失败（{chain_label}），{reason}。")
-            
+
+
+            # 最终兜底策略
+            fallback_solution, reason = self._prepare_fallback_solution(
+                chain_label, q_init, num_joints, global_q_min, global_q_max
+            )
+            print(f"  IK 多次尝试仍失败（{chain_label}），{reason}。")
+            self._ik_last_solution[chain_label] = fallback_solution
             return fallback_solution
                 
         except Exception as e:
-            print(f"IK 求解异常（{chain_label}, env={env_idx}）: {e}")
+            print(f"IK 求解异常（{chain_label}）: {e}")
             import traceback
             traceback.print_exc()
             num_joints = chain.getNrOfJoints()
             limit = 2.0 * np.pi
-            # 异常兜底：优先 last_solution，否则 clip(q_init)
-            last_sol = self._get_last_solution(env_idx, chain_label)
-            if last_sol is not None:
-                fallback = last_sol
-            else:
-                fallback = [
-                    float(np.clip(q_init[i] if i < len(q_init) else 0.0, -limit, limit))
-                    for i in range(num_joints)
-                ]
-
-            self._set_last_solution(env_idx, chain_label, fallback)
+            fallback = [
+                float(np.clip(q_init[i] if i < len(q_init) else 0.0, -limit, limit))
+                for i in range(num_joints)
+            ]
+            self._ik_last_solution[chain_label] = fallback
             return fallback
 
     def _numpy_to_kdl_frame(self, T: np.ndarray) -> kdl.Frame:

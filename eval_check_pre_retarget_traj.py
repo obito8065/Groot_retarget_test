@@ -10,9 +10,9 @@
 - 6行2列的子图，显示左右手腕各6个维度的轨迹对比
 
 命令：
-python eval_check_traj.py \
-    --pred-file /vla/users/lijiayi/code/groot_retarget/output_video_record/predicted_keypoints_20260126_164806.txt \
-    --retarget-file /vla/users/lijiayi/code/groot_retarget/output_video_record/retargeted_actions_20260126_164807.txt \
+python eval_check_pre_retarget_traj.py \
+    --pred-file /vla/users/lijiayi/code/groot_retarget/output_video_record/predicted_keypoints_20260128_174917.txt \
+    --retarget-file /vla/users/lijiayi/code/groot_retarget/output_video_record/retargeted_actions_20260128_174917.txt \
     --output /vla/users/lijiayi/code/groot_retarget/output_video_record/wrist_trajectory_pred_vs_retarget.png
 """
 
@@ -156,8 +156,8 @@ def visualize_comparison(pred_file, retarget_file, output_path=None):
     for dim_idx in range(6):
         # 左手
         ax_left = axes[dim_idx, 0]
-        ax_left.plot(time_steps, left_pred[:, dim_idx], 'b-', label='Predicted', linewidth=2, alpha=0.7)
-        ax_left.plot(time_steps, left_retarget[:, dim_idx], 'r--', label='Retargeted', linewidth=2, alpha=0.7)
+        ax_left.scatter(time_steps, left_pred[:, dim_idx], c='blue', label='Predicted', s=5, alpha=0.7)
+        ax_left.scatter(time_steps, left_retarget[:, dim_idx], c='red', label='Retargeted', s=5, alpha=0.7)
         ax_left.set_ylabel(f'Left Wrist {dim_names[dim_idx]}', fontsize=11)
         ax_left.grid(True, alpha=0.3)
         ax_left.legend(loc='best')
@@ -168,8 +168,8 @@ def visualize_comparison(pred_file, retarget_file, output_path=None):
         
         # 右手
         ax_right = axes[dim_idx, 1]
-        ax_right.plot(time_steps, right_pred[:, dim_idx], 'b-', label='Predicted', linewidth=2, alpha=0.7)
-        ax_right.plot(time_steps, right_retarget[:, dim_idx], 'r--', label='Retargeted', linewidth=2, alpha=0.7)
+        ax_right.scatter(time_steps, right_pred[:, dim_idx], c='blue', label='Predicted', s=5, alpha=0.7)
+        ax_right.scatter(time_steps, right_retarget[:, dim_idx], c='red', label='Retargeted', s=5, alpha=0.7)
         ax_right.set_ylabel(f'Right Wrist {dim_names[dim_idx]}', fontsize=11)
         ax_right.grid(True, alpha=0.3)
         ax_right.legend(loc='best')

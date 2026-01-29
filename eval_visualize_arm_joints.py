@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-可视化左右臂各7个关节的角度变化趋势
+可视化左右臂各7个关节的角度变化趋势，读取robocasa_action,可视化检查IK后每个关节是否存在跳变
 
 输入：
 - robocasa_action_*.txt: 包含关节角度的数据文件
@@ -169,7 +169,7 @@ def visualize_arm_joints(action_file, output_path=None):
 
 if __name__ == "__main__":
     # 文件路径
-    action_file = "/vla/users/lijiayi/code/groot_retarget/output_video_record/robocasa_action_20260126_171642.txt"
+    action_file = "/vla/users/lijiayi/code/groot_retarget/output_video_record/robocasa_action_20260128_174917.txt"
     
     # 检查文件是否存在
     if not Path(action_file).exists():

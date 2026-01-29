@@ -13,6 +13,11 @@ from tqdm import tqdm
 import PyKDL as kdl
 import tensorflow as tf
 
+
+"""
+  没有添加轴角连续性约束
+"""
+
 # --- 辅助函数 (保持不变) ---
 
 @dataclass

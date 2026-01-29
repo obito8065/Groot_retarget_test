@@ -17,7 +17,7 @@ Usage:
     
 Example:
     python eval_keypoint_dataset_reprojector_cli.py \
-        --dataset-root /vla/users/lijiayi/robocasa_datasets_full/pick_and_place_lerobot_task24/gr1_unified.PosttrainPnPNovelFromCuttingboardToBasketSplitA_GR1ArmsAndWaistFourierHands_1000_keypoints_v3 \
+        --dataset-root  /vla/users/lijiayi/robocasa_datasets_full/pick_and_place_lerobot_task24_sampled_300/gr1_unified.PosttrainPnPNovelFromCuttingboardToBasketSplitA_GR1ArmsAndWaistFourierHands_300_keypoints_v3 \
         --episode 20 \
         --fps 5
 """
