@@ -457,6 +457,17 @@ class GR00T_N1_5(PreTrainedModel):
         return action_head_outputs
 
     def prepare_input(self, inputs) -> Tuple[BatchFeature, BatchFeature]:
+        # 只在第一个step打印，避免日志过多
+        if not hasattr(self, '_first_input_logged'):
+            if "action" in inputs:
+                action = inputs["action"]
+                if isinstance(action, torch.Tensor):
+                    print(f"\n{'='*60}")
+                    print(f"[Model.prepare_input] Action shape: {action.shape}")
+                    print(f"Model action_horizon: {self.action_horizon}, action_dim: {self.action_dim}")
+                    print(f"{'='*60}\n")
+            self._first_input_logged = True
+
         self.validate_inputs(inputs)
         backbone_inputs = self.backbone.prepare_input(inputs)
         action_inputs = self.action_head.prepare_input(inputs)

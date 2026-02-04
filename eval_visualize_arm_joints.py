@@ -12,6 +12,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
+import argparse
 
 def parse_robocasa_action_file(file_path):
     """
@@ -169,12 +170,22 @@ def visualize_arm_joints(action_file, output_path=None):
 
 if __name__ == "__main__":
     # 文件路径
-    action_file = "/vla/users/lijiayi/code/groot_retarget/output_video_record/robocasa_action_20260128_174917.txt"
-    
+    parser = argparse.ArgumentParser(description="可视化左右臂各7个关节的角度变化趋势")
+    parser.add_argument("--action_file", type=str, default="/vla/users/lijiayi/code/groot_retarget/output_video_record/robocasa_action_20260128_174917.txt",
+                        help="robocasa_action文件路径")
+    args = parser.parse_args()
+
     # 检查文件是否存在
-    if not Path(action_file).exists():
-        print(f"错误: 找不到文件 {action_file}")
+    if not Path(args.action_file).exists():
+        print(f"错误: 找不到文件 {args.action_file}")
         exit(1)
     
     # 可视化
-    visualize_arm_joints(action_file)
+    visualize_arm_joints(args.action_file)
+
+
+"""
+python eval_visualize_arm_joints.py \
+    --action_file /vla/users/lijiayi/code/groot_retarget/output_video_record/robocasa_action_20260128_174917.txt
+
+"""

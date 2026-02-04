@@ -14,7 +14,7 @@
     python test_evaluation_on_train_dataset_reprojector.py \
         --keypoints-txt /vla/users/lijiayi/code/groot_retarget/output_video_record/train_eval_keypoints_traj0_20260127_155341.txt\
         --dataset-root /vla/users/lijiayi/robocasa_datasets_full/pick_and_place_lerobot_task24/gr1_unified.PosttrainPnPNovelFromCuttingboardToBasketSplitA_GR1ArmsAndWaistFourierHands_1000_keypoints_v3 \
-        --traj-id 0 \
+        --traj-id 1 \
         --chunk 0 \
         --output /vla/users/lijiayi/code/groot_retarget/output_video_record/output74ksteps.mp4 \
         --draw-input --draw-output
@@ -172,7 +172,8 @@ def parse_input_keypoints_from_parquet(parquet_path: Path):
         # 从 observation.state 中提取关键点数据
         # 格式：45维 = [left_key_points(21), right_key_points(21), waist(3)]
         # left_key_points(21) = wrist_xyz(3) + 5tips_xyz(15) + wrist_rotvec(3)
-        state_45d = np.array(row['observation.state'], dtype=np.float32)
+        # state_45d = np.array(row['observation.state'], dtype=np.float32)
+        state_45d = np.array(row['action'], dtype=np.float32)
         
         # 提取左手关键点 (21维)
         left_keypoints_21 = state_45d[0:21]

@@ -7,7 +7,7 @@ export PYTHONPATH=$SOURCE_PATH:$PYTHONPATH
 set -x
 cd /vla/users/lijiayi/code/groot_retarget
 dataset_list=(
-      "/vla/users/lijiayi/robocasa_datasets_full/pick_and_place_lerobot_task24_sampled_300/gr1_unified.PosttrainPnPNovelFromCuttingboardToBasketSplitA_GR1ArmsAndWaistFourierHands_300_keypoints_v3"
+      "/vla/users/lijiayi/robocasa_datasets_full/pick_and_place_lerobot_task24_sampled_300/gr1_unified.PnPWineToCabinetClose_GR1ArmsAndWaistFourierHands_300_keypoints_v3"
 )
 data_config=(
   "robocasa_retarget_50_horizon"
@@ -26,7 +26,7 @@ if [ "$DEBUG" = "true" ]; then
 else
     echo "Normal mode"
     # 每个节点使用的GPU（根据节点实际GPU数量调整）
-    export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5
+    export CUDA_VISIBLE_DEVICES=2,3,4,5,6,7
     NUM_GPUS_PER_NODE=6  # 每个节点的GPU数量
     NUM_GPUS=$NUM_GPUS_PER_NODE  # 补充定义：单节点的GPU数（用于条件判断）
     TOTAL_GPUS=$((NUM_NODES * NUM_GPUS_PER_NODE))  # 总GPU数量（多节点）
@@ -40,7 +40,7 @@ fi
 num_epochs=200
 SAVE_STEPS=3000
 
-OUTPUT_DIR=/vla/users/lijiayi/code/groot_retarget/output_ckpt/n1.5_nopretrain_finetuneALL_on_robocasa_task1_retarget_v3_bs384_horizon50
+OUTPUT_DIR=/vla/users/lijiayi/code/groot_retarget/output_ckpt/n1.5_nopretrain_finetuneALL_on_robocasa_task2_retarget_v3_bs384_horizon50
 
 if [ ! -d "$OUTPUT_DIR" ]; then
   mkdir -p "$OUTPUT_DIR"

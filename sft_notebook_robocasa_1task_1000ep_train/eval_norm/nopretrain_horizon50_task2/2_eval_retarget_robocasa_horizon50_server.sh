@@ -10,9 +10,10 @@ export MUJOCO_GL=egl
 export CUDA_VISIBLE_DEVICES=5
 
 python3 scripts/inference_service.py --server \
-    --model_path /vla/users/lijiayi/code/groot_retarget/output_ckpt/n1.5_nopretrain_finetuneALL_on_robocasa_task1_retarget_v3_bs384_horizon16/checkpoint-33000 \
-    --data_config robocasa_retarget \
+    --model_path /vla/users/lijiayi/code/groot_retarget/output_ckpt/n1.5_nopretrain_finetuneALL_on_robocasa_task2_retarget_v3_bs384_horizon50/checkpoint-33000 \
+    --data_config robocasa_retarget_50_horizon \
     --embodiment_tag robocasa \
     --port 57200 \
     --use_eepose \
     --use_fourier_hand_retarget \
+    --action_horizon 50

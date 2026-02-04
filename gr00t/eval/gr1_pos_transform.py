@@ -872,6 +872,35 @@ class BodyRetargeter:
                     solution = [q_out[i] for i in range(num_joints)]
                     # self._ik_last_solution[chain_label] = solution
 
+                    # === 添加角度连续性处理，防止正pai负pai跳变 ===
+                    prev_solution = self._get_last_solution(env_idx, chain_label)
+                    if prev_solution is not None:
+                        unwrapped_solution = []
+                        for i, (curr, prev) in enumerate(zip(solution, prev_solution)):
+                            # 计算角度差并归一化到 [-π, π]
+                            diff = curr - prev
+                            # 将差值归一化到 [-π, π] 范围
+                            diff = ((diff + np.pi) % (2 * np.pi)) - np.pi
+                            # 使用修正后的差值
+                            unwrapped_solution.append(prev + diff)
+                        solution = unwrapped_solution
+
+                    # # === 确保solution在URDF定义的关节限制内 ===
+                    # # 使用numpy数组进行向量化clip，更高效
+                    # if self._use_urdf_joint_limits and chain_label in self._chain_joint_limits:
+                    #     urdf_q_min, urdf_q_max = self._chain_joint_limits[chain_label]
+                    #     solution = np.clip(solution, urdf_q_min, urdf_q_max).tolist()
+                    # else:
+                    #     # 如果没有URDF限制，使用global限制（从kdl.JntArray提取）
+                    #     solution = [
+                    #         float(np.clip(
+                    #             solution[i],
+                    #             float(global_q_min[i]),
+                    #             float(global_q_max[i])
+                    #         ))
+                    #         for i in range(num_joints)
+                    #     ]
+
                     self._set_last_solution(env_idx, chain_label, solution)
                     return solution
 

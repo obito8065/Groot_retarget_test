@@ -693,14 +693,40 @@ class Gr00tPolicy(BasePolicy):
                 if D_kp == 21:
                     # 初始化存储结果的数组
                     # 输出格式：
-                    #   - arm: (B, horizon, 6) = [wrist_xyz(3), rotvec(3)]
-                    #   - hand: (B, horizon, 6) = [finger joints in dataset format]
+                    #   - arm: (B, horizon, 6) = [wrist_xyz(3), rotvec(3)] - 使用模型输出的（retarget前）
+                    #   - hand: (B, horizon, 6) = [finger joints in dataset format] - 使用retarget后的
                     retarget_left_arm_seq = np.zeros((batch_size, horizon, 6), dtype=np.float32)
                     retarget_right_arm_seq = np.zeros((batch_size, horizon, 6), dtype=np.float32)
                     retarget_left_hand_seq = np.zeros((batch_size, horizon, 6), dtype=np.float32)
                     retarget_right_hand_seq = np.zeros((batch_size, horizon, 6), dtype=np.float32)
                     
-                    # 逐帧进行retarget转换
+                    # ==========================================================
+                    # 大胆尝试：从模型输出的keypoints中提取wrist位姿（retarget前）
+                    # 21维格式：[wrist_xyz(3), 5tips_xyz(15), wrist_rotvec(3)]
+                    # ==========================================================
+                    # 提取所有帧的wrist信息
+                    # left_21格式: [wrist_xyz(0:3), tips_xyz(3:18), wrist_rotvec(18:21)]
+                    model_left_wrist_xyz = pred_left_keypoints_seq[:, :, 0:3]      # (B, horizon, 3)
+                    model_left_wrist_rotvec = pred_left_keypoints_seq[:, :, 18:21] # (B, horizon, 3)
+                    model_right_wrist_xyz = pred_right_keypoints_seq[:, :, 0:3]     # (B, horizon, 3)
+                    model_right_wrist_rotvec = pred_right_keypoints_seq[:, :, 18:21] # (B, horizon, 3)
+                    
+                    # 组合成wrist pose: [xyz(3), rotvec(3)] = 6维
+                    retarget_left_arm_seq = np.concatenate([
+                        model_left_wrist_xyz, 
+                        model_left_wrist_rotvec
+                    ], axis=-1)  # (B, horizon, 6)
+                    
+                    retarget_right_arm_seq = np.concatenate([
+                        model_right_wrist_xyz,
+                        model_right_wrist_rotvec
+                    ], axis=-1)  # (B, horizon, 6)
+                    
+                    print(f"[Policy Step3] 使用模型输出的wrist位姿（retarget前）:")
+                    print(f"  left_arm shape: {retarget_left_arm_seq.shape}")
+                    print(f"  right_arm shape: {retarget_right_arm_seq.shape}")
+                    
+                    # 逐帧进行retarget转换（只为了获取finger joints）
                     for t in range(horizon):
                         for b in range(batch_size):
                             
@@ -712,33 +738,41 @@ class Gr00tPolicy(BasePolicy):
                             state_45d = np.concatenate([left_21, right_21, waist_3])  # (45,)
                             
                             # 调用新的retarget API（支持warmup）
+                            # 注意：我们只使用返回的finger_joints，不使用wrist_pose
                             result = self.fourier_hand_retargeter.retarget_from_45d(state_45d)
                         
-                            # 提取左手的wrist pose和finger joints
+                            # 只提取finger joints，不使用wrist_pose
                             if 'left' in result:
-                                # wrist_pose: [wrist_xyz(3), rotvec(3)] = 6维
-                                retarget_left_arm_seq[b, t] = result['left']['wrist_pose']
                                 # finger_joints: [pinky, ring, middle, index, thumb_pitch, thumb_yaw] = 6维 (6个主动关节)
                                 retarget_left_hand_seq[b, t] = result['left']['finger_joints']
                             
-                            # 提取右手的wrist pose和finger joints
+                            # 只提取finger joints，不使用wrist_pose
                             if 'right' in result:
-                                retarget_right_arm_seq[b, t] = result['right']['wrist_pose']
                                 retarget_right_hand_seq[b, t] = result['right']['finger_joints']
                     
                     # 将转换后的结果赋值到action字典中
                     # 输出格式：
-                    #   - action.left_arm: (B, horizon, 6) = [L_wrist_xyz(3), L_rotvec(3)]
-                    #   - action.left_hand: (B, horizon, 6) = [L_finger_q1~6] pinky, ring, middle, index, thumb_pitch, thumb_yaw]
-                    #   - action.right_arm: (B, horizon, 6) = [R_wrist_xyz(3), R_rotvec(3)]
-                    #   - action.right_hand: (B, horizon, 6) = [R_finger_q1~6] (数据集格式)
+                    #   - action.left_arm: (B, horizon, 6) = [L_wrist_xyz(3), L_rotvec(3)] - 来自模型输出（retarget前）
+                    #   - action.left_hand: (B, horizon, 6) = [L_finger_q1~6] - 来自retarget后的finger_joints
+                    #   - action.right_arm: (B, horizon, 6) = [R_wrist_xyz(3), R_rotvec(3)] - 来自模型输出（retarget前）
+                    #   - action.right_hand: (B, horizon, 6) = [R_finger_q1~6] - 来自retarget后的finger_joints
 
+                    # 重排序finger joints: Retarget API输出格式 -> RoboCasa数据集格式
+                    # API输出格式: [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
+                    # 数据集格式: [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
                     
+                    # 使用模型输出的wrist位姿（retarget前）
                     unnormalized_action["action.left_arm"] = retarget_left_arm_seq
-                    unnormalized_action["action.left_hand"] = retarget_left_hand_seq # [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
+                    # 只有索引0,1,2,3,5需要取负号，索引4(thumb_pitch)不需要
+                    left_hand_processed = retarget_left_hand_seq.copy()
+                    left_hand_processed[..., [0, 1, 2, 3, 5]] = -left_hand_processed[..., [0, 1, 2, 3, 5]]
+                    unnormalized_action["action.left_hand"] = left_hand_processed # [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
                     
+                    # 使用模型输出的wrist位姿（retarget前）
                     unnormalized_action["action.right_arm"] = retarget_right_arm_seq
-                    unnormalized_action["action.right_hand"] = retarget_right_hand_seq # 直接使用Retarget API的输出 [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
+                    right_hand_processed = retarget_right_hand_seq.copy()
+                    right_hand_processed[..., [0, 1, 2, 3, 5]] = -right_hand_processed[..., [0, 1, 2, 3, 5]]
+                    unnormalized_action["action.right_hand"] = right_hand_processed # 直接使用Retarget API的输出 [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
                     # ==========================================================
                     # 调试功能：保存每个chunk中每个时间步的retarget输出（wrist pose + finger joints）
                     # ==========================================================

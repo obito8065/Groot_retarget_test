@@ -17,7 +17,7 @@ Usage:
     
 Example:
     python eval_keypoint_dataset_reprojector_cli.py \
-        --dataset-root  /vla/users/lijiayi/robocasa_datasets_full/pick_and_place_lerobot_task24_sampled_300/gr1_unified.PosttrainPnPNovelFromCuttingboardToBasketSplitA_GR1ArmsAndWaistFourierHands_300_keypoints_v3 \
+        --dataset-root  /vla/users/lijiayi/robocasa_datasets_full/pick_and_place_lerobot_task24_sampled_300/gr1_unified.PnPWineToCabinetClose_GR1ArmsAndWaistFourierHands_300_keypoints_v4 \
         --episode 20 \
         --fps 5
 """
@@ -161,7 +161,8 @@ def parse_keypoints_from_parquet(parquet_path):
         # 从 observation.state 中提取关键点数据
         # 格式：45维 = [left_key_points(21), right_key_points(21), waist(3)]
         # left_key_points(21) = wrist_xyz(3) + 5tips_xyz(15) + wrist_rotvec(3)
-        state_45d = np.array(row['observation.state'], dtype=np.float32)
+        # state_45d = np.array(row['observation.state'], dtype=np.float32)
+        state_45d = np.array(row['action'], dtype=np.float32)
         
         # 提取左手关键点 (21维)
         left_keypoints_21 = state_45d[0:21]

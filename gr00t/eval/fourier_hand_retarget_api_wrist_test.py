@@ -8,18 +8,31 @@ Fourier Hand Retarget API v2 - 严格按照原始retarget脚本实现
 - right_key_points(21): wrist_xyz(3) + 5tips_xyz(15) + wrist_rotvec(3)
 - waist(3)
 
-输出格式:
+输出格式（保持不变）:
 - left_wrist_pose: (6,) [pos(3), rotvec(3)]
 - left_finger_joints: (6,) [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
-  - 已进行符号修正：pinky, ring, middle, index, thumb_yaw 取负号，thumb_pitch 保持不变
-  - 可直接用于MuJoCo仿真控制
 
-用法示例：
+测试脚本用法：
+```bash
+python /vla/users/lijiayi/code/groot_retarget/gr00t/eval/fourier_hand_retarget_api_test.py \
+    --parquet_file /vla/users/lijiayi/robocasa_datasets_full/pick_and_place_lerobot_task24_sampled_300/gr1_unified.PnPWineToCabinetClose_GR1ArmsAndWaistFourierHands_300_keypoints_v4/data/chunk-000/episode_000020.parquet \
+    --action_key observation.state \
+    --output_plot /vla/users/lijiayi/code/groot_retarget/output_video_recordretarget_compariso_state_v4.png \
+    --max_frames 1000
+```
+
+参数说明：
+- --parquet_file: Parquet文件路径（训练数据集）
+- --action_key: Action字段的key名称，默认'action'
+- --output_plot: 输出plot图片的路径，如果不指定则不保存
+- --max_frames: 最大处理帧数，如果不指定则处理所有帧
+
+API用法示例：
 ```python
-from gr00t.eval.fourier_hand_retarget_api_v2 import FourierHandRetargetAPIV2
+from gr00t.eval.fourier_hand_retarget_api_test import FourierHandRetargetAPI
 
 # 初始化（只需初始化一次）
-retargeter = FourierHandRetargetAPIV2()
+retargeter = FourierHandRetargetAPI()
 
 # 在每个episode开始时reset
 retargeter.reset()
@@ -30,7 +43,7 @@ result = retargeter.retarget_from_45d(state_45d)
 
 # 使用结果
 left_wrist_pose = result['left']['wrist_pose']  # (6,): [pos(3), rotvec(3)]
-left_finger_joints = result['left']['finger_joints']  # (6,): MuJoCo控制量 [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
+left_finger_joints = result['left']['finger_joints']  # (6,): [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
 ```
 """
 
@@ -38,9 +51,15 @@ import sys
 import os
 import tempfile
 import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
 from pathlib import Path
 from typing import Dict, Optional, List
 from scipy.spatial.transform import Rotation as R
+
+# 设置matplotlib支持中文
+plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial Unicode MS', 'SimHei']
+plt.rcParams['axes.unicode_minus'] = False
 
 # 设置 SAPIEN 环境变量（headless模式）
 os.environ["PYOPENGL_PLATFORM"] = "egl"
@@ -89,10 +108,8 @@ class FourierHandRetargetAPI:
             'right': {...}
         }
         
-    注意: 
-        - finger_joints顺序为6个主动关节: [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
-        - 已进行符号修正：pinky, ring, middle, index, thumb_yaw 取负号，thumb_pitch 保持不变
-        - 可直接用于MuJoCo仿真控制
+    注意: finger_joints顺序为6个主动关节: [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
+          这是retarget配置文件中target_joint_names的顺序，可直接用于仿真控制
     """
     
     def __init__(
@@ -100,7 +117,7 @@ class FourierHandRetargetAPI:
         robot_name: str = "fourier",
         hand_sides: List[str] = ["left", "right"],
         wrist_enhance_weight: float = 2.0,
-        warm_up_steps: int = 5,
+        warm_up_steps: int = 1,
     ):
         """
         初始化Retarget API v2
@@ -130,9 +147,6 @@ class FourierHandRetargetAPI:
         # 用于轴角连续性处理：存储上一帧的四元数和轴角
         self._last_quaternion = {side: None for side in hand_sides}
         self._last_rotvec = {side: None for side in hand_sides}
-        
-        # 注意：不再需要URDF到MuJoCo的映射配置
-        # 现在直接使用符号修正：对 [pinky, ring, middle, index, thumb_yaw] 取负号，thumb_pitch 保持不变
         
         # 创建 SAPIEN scene 和 robots（用于 FK 计算，与 hand_robot_viewer_fourier.py 保持一致）
         self.scene = sapien.Scene()
@@ -320,6 +334,10 @@ class FourierHandRetargetAPI:
             self._last_quaternion[side] = None  # 重置四元数历史
             self._last_rotvec[side] = None  # 重置轴角历史
         
+        # 重置debug信息
+        if hasattr(self, '_debug_info'):
+            self._debug_info = {}
+        
         # 如果未来需要缓存last_qpos，在此根据env_idx清理
         # if env_idx is not None:
         #     清理指定环境的缓存
@@ -373,8 +391,8 @@ class FourierHandRetargetAPI:
         Returns:
             {
                 'left': {
-                    'wrist_pose': (6,) [pos_xyz(3), rotvec_xyz(3)],
-                    'finger_joints': (6,) [pinky, ring, middle, index, thumb_pitch, thumb_yaw] (已符号修正)
+                    'wrist_pose': (6,) [pos_xyz(3), euler_xyz(3)],
+                    'finger_joints': (6,) [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
                 },
                 'right': {...}
             }
@@ -461,6 +479,12 @@ class FourierHandRetargetAPI:
             # 返回完整的qpos（包含所有关节）
             # qpos格式: [dummy_joints(6), ...其他关节(N)...]
             # dummy_joints = [x_trans, y_trans, z_trans, x_rot, y_rot, z_rot]
+            
+            # Debug: 记录retarget前的关键点（wrist位置）
+            # target_link_human_indices的最后一个索引对应wrist
+            wrist_idx_in_human_keypoints = len(human_keypoints) - 1  # 假设wrist是最后一个
+            target_wrist_kp = human_keypoints[wrist_idx_in_human_keypoints]  # 输入到retargeting的wrist位置
+            
             qpos_full = retargeting.retarget(human_keypoints)
             
             # 8. 通过 SAPIEN FK 计算 hand_base_link 的实际位姿（与 hand_robot_viewer_fourier.py 保持一致）
@@ -474,8 +498,28 @@ class FourierHandRetargetAPI:
             wrist_pos = link_pose.p  # (3,) 位置
             wrist_rotvec_raw = rotations.compact_axis_angle_from_quaternion(link_pose.q)  # (3,) 轴角表示
             
+            # Debug: 检查retarget后的wrist位置是否匹配输入
+            wrist_pos_error = np.linalg.norm(wrist_pos - target_wrist_kp)
+            
             # 应用轴角连续性处理，避免等价表示跳变
             wrist_rotvec = self._ensure_axisangle_continuity(wrist_rotvec_raw, side)
+            
+            # Debug: 存储debug信息（如果需要在外部访问）
+            if not hasattr(self, '_debug_info'):
+                self._debug_info = {}
+            if side not in self._debug_info:
+                self._debug_info[side] = []
+            
+            self._debug_info[side].append({
+                'frame': self._episode_frame_count[side],
+                'input_wrist_xyz': wrist_xyz.copy(),  # 原始输入的wrist位置
+                'target_wrist_kp': target_wrist_kp.copy(),  # 输入到retargeting的wrist位置
+                'output_wrist_pos': wrist_pos.copy(),  # retargeting后FK计算的wrist位置
+                'wrist_pos_error': wrist_pos_error,
+                'input_rotvec': wrist_rotvec.copy(),  # 原始输入的rotvec
+                'output_rotvec_raw': wrist_rotvec_raw.copy(),  # FK计算的原始rotvec
+                'output_rotvec_continuous': wrist_rotvec.copy(),  # 连续性处理后的rotvec
+            })
             
             # 组合成 6D wrist pose: [pos(3), rotvec(3)]
             wrist_pose = np.concatenate([wrist_pos, wrist_rotvec]).astype(np.float32)
@@ -486,25 +530,13 @@ class FourierHandRetargetAPI:
             desired_indices = self.desired_joint_indices[side]
             finger_joints = qpos_full[desired_indices]  # (6,)
             
-            # 符号修正：为了与控制量统一，需要对某些关节取负号
-            # [pinky, ring, middle, index, thumb_pitch, thumb_yaw] 中
-            # pinky, ring, middle, index, thumb_yaw 需要取负号
-            # thumb_pitch 不需要取负号
-            finger_joints_corrected = finger_joints.copy()
-            finger_joints_corrected[0] = -finger_joints[0]  # pinky
-            finger_joints_corrected[1] = -finger_joints[1]  # ring
-            finger_joints_corrected[2] = -finger_joints[2]  # middle
-            finger_joints_corrected[3] = -finger_joints[3]  # index
-            # finger_joints_corrected[4] = finger_joints[4]  # thumb_pitch (保持不变)
-            finger_joints_corrected[5] = -finger_joints[5]  # thumb_yaw
-            
             # 确保shape正确
             assert wrist_pose.shape == (6,), f"{side} wrist_pose shape错误: {wrist_pose.shape}, 期望(6,)"
-            assert finger_joints_corrected.shape == (6,), f"{side} finger_joints shape错误: {finger_joints_corrected.shape}, 期望(6,). desired_indices={desired_indices}, qpos_full.shape={qpos_full.shape}"
+            assert finger_joints.shape == (6,), f"{side} finger_joints shape错误: {finger_joints.shape}, 期望(6,). desired_indices={desired_indices}, qpos_full.shape={qpos_full.shape}"
             
             result[side] = {
                 'wrist_pose': wrist_pose,
-                'finger_joints': finger_joints_corrected,  # (6,) [pinky, ring, middle, index, thumb_pitch, thumb_yaw] (已符号修正)
+                'finger_joints': finger_joints,  # [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
             }
             
             # 增加帧计数
@@ -518,8 +550,37 @@ class FourierHandRetargetAPI:
 # 测试
 # ============================================================================
 if __name__ == "__main__":
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="测试Fourier Hand Retarget API")
+    parser.add_argument(
+        "--parquet_file",
+        type=str,
+        required=True,
+        help="Parquet文件路径（训练数据集）"
+    )
+    parser.add_argument(
+        "--action_key",
+        type=str,
+        default="action",
+        help="Action字段的key名称，默认'action'"
+    )
+    parser.add_argument(
+        "--output_plot",
+        type=str,
+        default=None,
+        help="输出plot图片的路径，如果不指定则不保存"
+    )
+    parser.add_argument(
+        "--max_frames",
+        type=int,
+        default=None,
+        help="最大处理帧数，如果不指定则处理所有帧"
+    )
+    args = parser.parse_args()
+    
     print("=" * 80)
-    print("Testing FourierHandRetargetAPI")
+    print("Testing FourierHandRetargetAPI with Parquet Dataset")
     print("=" * 80)
     
     # 初始化
@@ -530,51 +591,270 @@ if __name__ == "__main__":
     print("\n[2] 开始新episode（调用reset）...")
     api.reset()
     
-    # 读取数据文件
-    data_file = Path("/vla/users/lijiayi/robocasa_datasets_full/pick_and_place_lerobot_task24_eepose/gr1_unified.PosttrainPnPNovelFromCuttingboardToBasketSplitA_GR1ArmsAndWaistFourierHands_1000_keypoints_v2/data/chunk-000/episode_000000_actions_first20.txt")
-    print(f"\n[3] 读取数据文件: {data_file}")
+    # 读取parquet文件
+    parquet_path = Path(args.parquet_file)
+    print(f"\n[3] 读取Parquet文件: {parquet_path}")
     
-    frames_data = []
-    with open(data_file, 'r') as f:
-        for line_idx, line in enumerate(f):
-            if line_idx >= 3:  # 只读取前3帧（Frame 0, 1, 2）
-                break
-            # 解析格式: "Frame N: num1 num2 ... num45"
-            parts = line.strip().split(':')
-            if len(parts) != 2:
-                continue
-            frame_num = int(parts[0].split()[1])
-            numbers = parts[1].strip().split()
-            if len(numbers) != 45:
-                print(f"警告: Frame {frame_num} 的数据维度不是45维，实际为 {len(numbers)}")
-                continue
-            state_45d = np.array([float(x) for x in numbers], dtype=np.float32)
-            frames_data.append((frame_num, state_45d))
+    if not parquet_path.exists():
+        raise FileNotFoundError(f"Parquet文件不存在: {parquet_path}")
     
-    print(f"   成功读取 {len(frames_data)} 帧数据")
+    df = pd.read_parquet(parquet_path)
+    print(f"   成功读取 {len(df)} 行数据")
     
-    # 测试前3帧（包含warmup）
-    print("\n[4] 对前3帧进行retarget...")
+    # 检查action字段
+    if args.action_key not in df.columns:
+        raise ValueError(f"Action字段 '{args.action_key}' 不存在于parquet文件中。可用字段: {df.columns.tolist()}")
+    
+    # 提取action数据
+    action_data = df[args.action_key].values
+    print(f"   Action数据类型: {type(action_data[0])}")
+    
+    # 处理action数据：可能是字典、列表或numpy数组
+    actions_list = []
+    for i, act in enumerate(action_data):
+        if isinstance(act, dict):
+            # 如果是字典，尝试提取45维数组
+            # 可能的格式：{'left_key_points': [...], 'right_key_points': [...], 'waist': [...]}
+            # 或者已经flatten的格式
+            if 'left_key_points' in act and 'right_key_points' in act:
+                left_kp = np.array(act['left_key_points']).flatten()
+                right_kp = np.array(act['right_key_points']).flatten()
+                waist = np.array(act.get('waist', [0, 0, 0])).flatten()
+                combined = np.concatenate([left_kp, right_kp, waist])
+            else:
+                # 尝试将所有值flatten
+                combined = np.concatenate([np.array(v).flatten() for v in act.values()])
+            actions_list.append(combined)
+        elif isinstance(act, (list, np.ndarray)):
+            actions_list.append(np.array(act).flatten())
+        else:
+            raise ValueError(f"无法处理action数据类型: {type(act)} at index {i}")
+    
+    actions = np.array(actions_list)
+    print(f"   Action shape: {actions.shape}")
+    
+    if len(actions.shape) != 2 or actions.shape[1] != 45:
+        raise ValueError(f"Action维度错误: 期望(N, 45)，实际为{actions.shape}")
+    
+    # 限制处理帧数
+    num_frames = len(actions)
+    if args.max_frames is not None:
+        num_frames = min(num_frames, args.max_frames)
+    actions = actions[:num_frames]
+    
+    print(f"   将处理 {num_frames} 帧数据")
+    
+    # 存储retarget前后的数据
+    # 格式: {side: {dim: [values...]}}
+    # dim: 'x', 'y', 'z', 'rotvec_x', 'rotvec_y', 'rotvec_z'
+    before_retarget = {
+        'left': {'x': [], 'y': [], 'z': [], 'rotvec_x': [], 'rotvec_y': [], 'rotvec_z': []},
+        'right': {'x': [], 'y': [], 'z': [], 'rotvec_x': [], 'rotvec_y': [], 'rotvec_z': []}
+    }
+    after_retarget = {
+        'left': {'x': [], 'y': [], 'z': [], 'rotvec_x': [], 'rotvec_y': [], 'rotvec_z': []},
+        'right': {'x': [], 'y': [], 'z': [], 'rotvec_x': [], 'rotvec_y': [], 'rotvec_z': []}
+    }
+    
+    # 对每个时间步进行retarget
+    print("\n[4] 对每个时间步进行retarget...")
     print("=" * 80)
-    for frame_num, state_45d in frames_data:
-        print(f"\n--- Frame {frame_num} ---")
+    
+    # Debug统计信息
+    debug_stats = {
+        'left': {
+            'max_pos_error': 0.0,
+            'max_rotvec_error': 0.0,
+            'max_actual_rot_error': 0.0,
+            'frames_with_large_error': []
+        },
+        'right': {
+            'max_pos_error': 0.0,
+            'max_rotvec_error': 0.0,
+            'max_actual_rot_error': 0.0,
+            'frames_with_large_error': []
+        }
+    }
+    
+    for t in range(num_frames):
+        if (t + 1) % 100 == 0:
+            print(f"  处理进度: {t+1}/{num_frames}")
         
+        state_45d = actions[t].astype(np.float32)
+        
+        # 提取retarget前的数据（从输入中提取）
+        # left_key_points(21): wrist_xyz(3) + 5tips_xyz(15) + wrist_rotvec(3)
+        # right_key_points(21): 同上
+        left_wrist_xyz_before = state_45d[0:3]
+        left_wrist_rotvec_before = state_45d[18:21]
+        right_wrist_xyz_before = state_45d[21:24]
+        right_wrist_rotvec_before = state_45d[39:42]
+        
+        # 记录retarget前的数据
+        before_retarget['left']['x'].append(left_wrist_xyz_before[0])
+        before_retarget['left']['y'].append(left_wrist_xyz_before[1])
+        before_retarget['left']['z'].append(left_wrist_xyz_before[2])
+        before_retarget['left']['rotvec_x'].append(left_wrist_rotvec_before[0])
+        before_retarget['left']['rotvec_y'].append(left_wrist_rotvec_before[1])
+        before_retarget['left']['rotvec_z'].append(left_wrist_rotvec_before[2])
+        
+        before_retarget['right']['x'].append(right_wrist_xyz_before[0])
+        before_retarget['right']['y'].append(right_wrist_xyz_before[1])
+        before_retarget['right']['z'].append(right_wrist_xyz_before[2])
+        before_retarget['right']['rotvec_x'].append(right_wrist_rotvec_before[0])
+        before_retarget['right']['rotvec_y'].append(right_wrist_rotvec_before[1])
+        before_retarget['right']['rotvec_z'].append(right_wrist_rotvec_before[2])
+        
+        # 执行retarget
         result = api.retarget_from_45d(state_45d)
         
-        # 打印每个时间步的retarget输出：手腕xyz + 轴角
+        # 记录retarget后的数据并进行debug分析
         for side in ['left', 'right']:
             if side in result:
                 wrist_pose = result[side]['wrist_pose']
-                wrist_xyz = wrist_pose[0:3]  # 前3维是xyz位置
-                wrist_rotvec = wrist_pose[3:6]  # 后3维是轴角旋转
+                wrist_xyz = wrist_pose[0:3]
+                wrist_rotvec = wrist_pose[3:6]
                 
-                print(f"\n{side.capitalize()}手:")
-                print(f"  手腕位置 (xyz): [{wrist_xyz[0]:.6f}, {wrist_xyz[1]:.6f}, {wrist_xyz[2]:.6f}]")
-                print(f"  手腕轴角 (rotvec): [{wrist_rotvec[0]:.6f}, {wrist_rotvec[1]:.6f}, {wrist_rotvec[2]:.6f}]")
+                # 获取输入数据
+                if side == 'left':
+                    input_xyz = left_wrist_xyz_before
+                    input_rotvec = left_wrist_rotvec_before
+                else:
+                    input_xyz = right_wrist_xyz_before
+                    input_rotvec = right_wrist_rotvec_before
                 
-                # 显示warmup状态
-                is_warmed = api._is_warmed_up[side]
-                print(f"  Warmed up: {is_warmed}")
+                # 计算位置误差
+                pos_error = np.linalg.norm(wrist_xyz - input_xyz)
+                debug_stats[side]['max_pos_error'] = max(debug_stats[side]['max_pos_error'], pos_error)
+                
+                # 计算轴角数值误差
+                rotvec_error = np.linalg.norm(wrist_rotvec - input_rotvec)
+                debug_stats[side]['max_rotvec_error'] = max(debug_stats[side]['max_rotvec_error'], rotvec_error)
+                
+                # 计算实际旋转角度误差（通过旋转矩阵）
+                R_input = R.from_rotvec(input_rotvec).as_matrix()
+                R_output = R.from_rotvec(wrist_rotvec).as_matrix()
+                R_diff = R_input.T @ R_output  # 相对旋转
+                actual_rotvec_diff = R.from_matrix(R_diff).as_rotvec()
+                actual_rot_error = np.linalg.norm(actual_rotvec_diff)
+                actual_rot_error_deg = np.degrees(actual_rot_error)
+                debug_stats[side]['max_actual_rot_error'] = max(debug_stats[side]['max_actual_rot_error'], actual_rot_error_deg)
+                
+                # 如果误差较大，记录详细信息
+                if pos_error > 0.05 or actual_rot_error_deg > 10.0:  # 位置误差>5cm或旋转误差>10度
+                    debug_stats[side]['frames_with_large_error'].append({
+                        'frame': t,
+                        'pos_error': pos_error,
+                        'rotvec_error': rotvec_error,
+                        'actual_rot_error_deg': actual_rot_error_deg,
+                        'input_xyz': input_xyz.copy(),
+                        'output_xyz': wrist_xyz.copy(),
+                        'input_rotvec': input_rotvec.copy(),
+                        'output_rotvec': wrist_rotvec.copy(),
+                    })
+                
+                # 每50帧打印一次详细debug信息
+                if t % 50 == 0 or (pos_error > 0.05 or actual_rot_error_deg > 10.0):
+                    print(f"\n[DEBUG Frame {t}] {side.upper()} hand:")
+                    print(f"  Position:")
+                    print(f"    Input:  [{input_xyz[0]:.4f}, {input_xyz[1]:.4f}, {input_xyz[2]:.4f}]")
+                    print(f"    Output: [{wrist_xyz[0]:.4f}, {wrist_xyz[1]:.4f}, {wrist_xyz[2]:.4f}]")
+                    print(f"    Error:  {pos_error:.4f} m ({pos_error*100:.2f} cm)")
+                    print(f"  Rotation (axis-angle):")
+                    print(f"    Input:  [{input_rotvec[0]:.4f}, {input_rotvec[1]:.4f}, {input_rotvec[2]:.4f}]")
+                    print(f"    Output: [{wrist_rotvec[0]:.4f}, {wrist_rotvec[1]:.4f}, {wrist_rotvec[2]:.4f}]")
+                    print(f"    Rotvec norm error: {rotvec_error:.4f}")
+                    print(f"    Actual rotation error: {actual_rot_error_deg:.2f}°")
+                    
+                    # 检查warmup状态
+                    is_warmed = api._is_warmed_up.get(side, False)
+                    frame_count = api._episode_frame_count.get(side, 0)
+                    print(f"  Warmup status: {is_warmed} (frame_count={frame_count})")
+                    
+                    # 检查retargeting内部debug信息
+                    if hasattr(api, '_debug_info') and side in api._debug_info and len(api._debug_info[side]) > 0:
+                        debug_info = api._debug_info[side][-1]  # 最新的一帧
+                        if 'wrist_pos_error' in debug_info:
+                            print(f"  Retargeting内部wrist位置误差: {debug_info['wrist_pos_error']:.4f} m")
+                            print(f"    输入到retargeting的wrist位置: [{debug_info['target_wrist_kp'][0]:.4f}, "
+                                  f"{debug_info['target_wrist_kp'][1]:.4f}, {debug_info['target_wrist_kp'][2]:.4f}]")
+                            print(f"    FK计算的wrist位置: [{debug_info['output_wrist_pos'][0]:.4f}, "
+                                  f"{debug_info['output_wrist_pos'][1]:.4f}, {debug_info['output_wrist_pos'][2]:.4f}]")
+                
+                after_retarget[side]['x'].append(wrist_xyz[0])
+                after_retarget[side]['y'].append(wrist_xyz[1])
+                after_retarget[side]['z'].append(wrist_xyz[2])
+                after_retarget[side]['rotvec_x'].append(wrist_rotvec[0])
+                after_retarget[side]['rotvec_y'].append(wrist_rotvec[1])
+                after_retarget[side]['rotvec_z'].append(wrist_rotvec[2])
+    
+    print(f"  完成！处理了 {num_frames} 帧数据")
+    
+    # 打印debug统计信息
+    print("\n" + "=" * 80)
+    print("[DEBUG] Retarget误差统计")
+    print("=" * 80)
+    for side in ['left', 'right']:
+        stats = debug_stats[side]
+        print(f"\n{side.upper()} hand:")
+        print(f"  最大位置误差: {stats['max_pos_error']:.4f} m ({stats['max_pos_error']*100:.2f} cm)")
+        print(f"  最大轴角数值误差: {stats['max_rotvec_error']:.4f}")
+        print(f"  最大实际旋转误差: {stats['max_actual_rot_error']:.2f}°")
+        print(f"  误差较大的帧数: {len(stats['frames_with_large_error'])}")
+        
+        if len(stats['frames_with_large_error']) > 0:
+            print(f"\n  前10个误差较大的帧:")
+            for i, err_info in enumerate(stats['frames_with_large_error'][:10]):
+                print(f"    Frame {err_info['frame']}: pos_error={err_info['pos_error']:.4f}m, "
+                      f"rot_error={err_info['actual_rot_error_deg']:.2f}°")
+                print(f"      Input rotvec:  [{err_info['input_rotvec'][0]:.4f}, "
+                      f"{err_info['input_rotvec'][1]:.4f}, {err_info['input_rotvec'][2]:.4f}]")
+                print(f"      Output rotvec: [{err_info['output_rotvec'][0]:.4f}, "
+                      f"{err_info['output_rotvec'][1]:.4f}, {err_info['output_rotvec'][2]:.4f}]")
+    
+    print("\n" + "=" * 80)
+    
+    # 生成对比图
+    print("\n[5] 生成对比图...")
+    
+    # 创建12个子图：左右手各6个维度
+    fig, axes = plt.subplots(6, 2, figsize=(16, 20))
+    fig.suptitle('Retarget前后对比：左右手腕位置和轴角', fontsize=16, fontweight='bold')
+    
+    dim_names = ['x', 'y', 'z', 'rotvec_x', 'rotvec_y', 'rotvec_z']
+    dim_labels = ['X_position', 'Y_position', 'Z_position', 'X_rotvec', 'Y_rotvec', 'Z_rotvec']
+    sides = ['left', 'right']
+    side_labels = ['left_hand', 'right_hand']
+    colors = {'before': 'red', 'after': 'blue'}
+    
+    time_steps = np.arange(num_frames)
+    
+    for row, (dim, dim_label) in enumerate(zip(dim_names, dim_labels)):
+        for col, (side, side_label) in enumerate(zip(sides, side_labels)):
+            ax = axes[row, col]
+            
+            # 绘制retarget前后的数据
+            ax.scatter(time_steps, before_retarget[side][dim], 
+                      c=colors['before'], label='Retarget input', alpha=0.6, s=4)
+            ax.scatter(time_steps, after_retarget[side][dim], 
+                      c=colors['after'], label='Retarget output', alpha=0.6, s=4)
+            
+            ax.set_xlabel('timestep')
+            ax.set_ylabel(dim_label)
+            ax.set_title(f'{side_label} - {dim_label}')
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    
+    # 保存或显示图片
+    if args.output_plot:
+        output_path = Path(args.output_plot)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(output_path, dpi=150, bbox_inches='tight')
+        print(f"   图片已保存到: {output_path}")
+    else:
+        plt.show()
     
     print("\n" + "=" * 80)
     print("✅ Test completed!")
@@ -583,4 +863,6 @@ if __name__ == "__main__":
     print("  - 第0帧会执行warmup（因为warm_up_steps=1）")
     print("  - warmup使用wrist_xyz和wrist_rotvec信息")
     print("  - 后续帧直接进行retarget")
+    print("  - 红色点：Retarget前的数据（输入）")
+    print("  - 蓝色点：Retarget后的数据（输出）")
     print("  - 输出格式：wrist_pose(6) = [xyz(3), rotvec(3)]")

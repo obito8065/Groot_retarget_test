@@ -733,12 +733,20 @@ class Gr00tPolicy(BasePolicy):
                     #   - action.right_arm: (B, horizon, 6) = [R_wrist_xyz(3), R_rotvec(3)]
                     #   - action.right_hand: (B, horizon, 6) = [R_finger_q1~6] (数据集格式)
 
+                    # 重排序finger joints: Retarget API输出格式 -> RoboCasa数据集格式
+                    # API输出格式: [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
+                    # 数据集格式: [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
                     
                     unnormalized_action["action.left_arm"] = retarget_left_arm_seq
-                    unnormalized_action["action.left_hand"] = retarget_left_hand_seq # [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
+                    # 只有索引0,1,2,3,5需要取负号，索引4(thumb_pitch)不需要
+                    left_hand_processed = retarget_left_hand_seq.copy()
+                    left_hand_processed[..., [0, 1, 2, 3, 5]] = -left_hand_processed[..., [0, 1, 2, 3, 5]]
+                    unnormalized_action["action.left_hand"] = left_hand_processed # [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
                     
                     unnormalized_action["action.right_arm"] = retarget_right_arm_seq
-                    unnormalized_action["action.right_hand"] = retarget_right_hand_seq # 直接使用Retarget API的输出 [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
+                    right_hand_processed = retarget_right_hand_seq.copy()
+                    right_hand_processed[..., [0, 1, 2, 3, 5]] = -right_hand_processed[..., [0, 1, 2, 3, 5]]
+                    unnormalized_action["action.right_hand"] = right_hand_processed # 直接使用Retarget API的输出 [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
                     # ==========================================================
                     # 调试功能：保存每个chunk中每个时间步的retarget输出（wrist pose + finger joints）
                     # ==========================================================

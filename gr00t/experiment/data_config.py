@@ -2625,6 +2625,73 @@ class RoboCasaEgoDexRetargetDataConfig(FourierGr1ArmsOnlyDataConfig):
 ###########################################################################################
 
 
+class RoboCasaEgoDexRetarget50HorizonDataConfig(FourierGr1ArmsOnlyDataConfig):
+    video_keys = ["video.ego_view"]
+    state_keys = [
+        "state.left_key_points",
+        "state.right_key_points",
+        "state.waist",
+    ]
+    action_keys = [
+        "action.left_key_points",
+        "action.right_key_points",
+        "action.waist",
+    ]
+    language_keys = ["annotation.human.coarse_action"]
+    observation_indices = [0]
+    action_indices = list(range(50))
+
+    def modality_config(self):
+        return super().modality_config()
+
+    def transform(self):
+        transforms = [
+            # video transforms
+            VideoToTensor(apply_to=self.video_keys),
+            VideoCrop(apply_to=self.video_keys, scale=0.95),
+            VideoResize(apply_to=self.video_keys, height=224, width=224, interpolation="linear"),
+            VideoColorJitter(
+                apply_to=self.video_keys,
+                brightness=0.3,
+                contrast=0.4,
+                saturation=0.5,
+                hue=0.08,
+            ),
+            VideoToNumpy(apply_to=self.video_keys),
+            # state transforms
+            StateActionToTensor(apply_to=self.state_keys),
+            StateActionTransform(
+                apply_to=self.state_keys,
+                normalization_modes={key: "min_max" for key in self.state_keys},
+                # normalization_modes={key: "min_max" for key in self.state_keys},
+            ),
+            # action transforms
+            StateActionToTensor(apply_to=self.action_keys),
+            StateActionTransform(
+                apply_to=self.action_keys,
+                normalization_modes={key: "min_max" for key in self.action_keys},
+                # normalization_modes={key: "min_max" for key in self.action_keys},
+            ),
+            # concat transforms
+            ConcatTransform(
+                video_concat_order=self.video_keys,
+                state_concat_order=self.state_keys,
+                action_concat_order=self.action_keys,
+            ),
+            GR00TTransform(
+                state_horizon=len(self.observation_indices),
+                action_horizon=len(self.action_indices),
+                max_state_dim=64,
+                max_action_dim=64,  # 数据维度: left_key_points(18) + right_key_points(18) + waist(3) = 39，pad到64
+            ),
+        ]
+
+        return ComposedModalityTransform(transforms=transforms)
+
+
+###########################################################################################
+
+
 DATA_CONFIG_MAP = {
     "robotwin": RoboTwinDataConfig(),
     "robotwin_ego" : RoboTwinEgoDataConfig(),
@@ -2634,6 +2701,7 @@ DATA_CONFIG_MAP = {
     ############################################################
     "robocasa": RoboCasaDataConfig(),
     "robocasa_retarget": RoboCasaEgoDexRetargetDataConfig(),
+    "robocasa_retarget_50_horizon": RoboCasaEgoDexRetarget50HorizonDataConfig(),
     "robocasa_egodex": RoboCasaEgoDexDataConfig(),
     "fourier_gr1_arms_waist2egodex" : FourierGr1ArmWaist2EgoDexDataConfig(),
     "fourier_gr1_arms_waist": FourierGr1ArmsWaistDataConfig(),

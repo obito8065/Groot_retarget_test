@@ -97,6 +97,9 @@ class ArgsConfig:
     use_msgpack: bool = False
     """Whether to use msgpack for the server."""
 
+    action_horizon: int = None
+    """Action horizon to override the default value in data config. If None, uses the default from data config."""
+
 
 #####################################################################################
 

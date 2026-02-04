@@ -2590,8 +2590,8 @@
     <axis
       xyz="0 1 0" />
     <limit
-      lower="-3.0"
-      upper="3.0"
+      lower="-1.5"
+      upper="1.5"
       effort="3.95"
       velocity="27.96" />
   </joint>

@@ -10,9 +10,8 @@ Fourier Hand Retarget API v2 - 严格按照原始retarget脚本实现
 
 输出格式:
 - left_wrist_pose: (6,) [pos(3), rotvec(3)]
-- left_finger_joints: (6,) [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
-  - 已进行符号修正：pinky, ring, middle, index, thumb_yaw 取负号，thumb_pitch 保持不变
-  - 可直接用于MuJoCo仿真控制
+- left_finger_joints: (6,) [pinky, ring, middle, index, thumb_pitch, thumb_yaw] (MuJoCo控制量)
+  - MuJoCo范围: 握紧[1.5,1.5,1.5,1.5,3,3], 放松[-1.5,-1.5,-1.5,-1.5,-3,-3]
 
 用法示例：
 ```python
@@ -84,15 +83,15 @@ class FourierHandRetargetAPI:
         {
             'left': {
                 'wrist_pose': (6,) [pos_xyz(3), rotvec_xyz(3)],
-                'finger_joints': (6,) [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
+                'finger_joints': (6,) [pinky, ring, middle, index, thumb_pitch, thumb_yaw] (MuJoCo控制量)
             },
             'right': {...}
         }
         
-    注意: 
-        - finger_joints顺序为6个主动关节: [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
-        - 已进行符号修正：pinky, ring, middle, index, thumb_yaw 取负号，thumb_pitch 保持不变
-        - 可直接用于MuJoCo仿真控制
+    注意: finger_joints顺序为6个主动关节: [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
+          - 输出的是MuJoCo控制量，已从URDF角度映射
+          - MuJoCo范围: 握紧[1.5,1.5,1.5,1.5,3,3], 放松[-1.5,-1.5,-1.5,-1.5,-3,-3]
+          - 可直接用于MuJoCo仿真控制
     """
     
     def __init__(
@@ -131,8 +130,16 @@ class FourierHandRetargetAPI:
         self._last_quaternion = {side: None for side in hand_sides}
         self._last_rotvec = {side: None for side in hand_sides}
         
-        # 注意：不再需要URDF到MuJoCo的映射配置
-        # 现在直接使用符号修正：对 [pinky, ring, middle, index, thumb_yaw] 取负号，thumb_pitch 保持不变
+        # URDF到MuJoCo的关节角度映射配置
+        # 顺序: [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
+        # URDF全部握紧: [-1.57, -1.74, -1.57, -1.57, 0, -1.74]
+        # URDF全部松开: [0, 0, 0, 0, 1.22, 0]
+        # MuJoCo全部握紧: [1.5, 1.5, 1.5, 1.5, 3, 3]
+        # MuJoCo全部放松: [-1.5, -1.5, -1.5, -1.5, -3, -3]
+        self.urdf_min = np.array([-1.57, -1.74, -1.57, -1.57, 0, -1.74], dtype=np.float32)  # URDF握紧
+        self.urdf_max = np.array([0, 0, 0, 0, 1.22, 0], dtype=np.float32)  # URDF松开
+        self.mujoco_min = np.array([-1.5, -1.5, -1.5, -1.5, -3, -3], dtype=np.float32)  # MuJoCo放松
+        self.mujoco_max = np.array([1.5, 1.5, 1.5, 1.5, 3, 3], dtype=np.float32)  # MuJoCo握紧
         
         # 创建 SAPIEN scene 和 robots（用于 FK 计算，与 hand_robot_viewer_fourier.py 保持一致）
         self.scene = sapien.Scene()
@@ -228,6 +235,46 @@ class FourierHandRetargetAPI:
         print(f"  Robot: {robot_name}, Sides: {hand_sides}")
         print(f"  Wrist enhance weight: {wrist_enhance_weight}")
         print(f"  Warmup steps: {warm_up_steps}")
+    
+    def _map_urdf_to_mujoco(self, urdf_joints: np.ndarray) -> np.ndarray:
+        """
+        将URDF关节角度映射到MuJoCo控制量
+        
+        Args:
+            urdf_joints: (6,) URDF关节角度 [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
+        
+        Returns:
+            mujoco_joints: (6,) MuJoCo控制量 [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
+        
+        映射规则:
+            - URDF全部握紧: [-1.57, -1.74, -1.57, -1.57, 0, -1.74] -> MuJoCo全部握紧: [1.5, 1.5, 1.5, 1.5, 3, 3]
+            - URDF全部松开: [0, 0, 0, 0, 1.22, 0] -> MuJoCo全部放松: [-1.5, -1.5, -1.5, -1.5, -3, -3]
+            使用线性插值进行映射
+        """
+        urdf_joints = np.asarray(urdf_joints, dtype=np.float32)
+        if urdf_joints.shape != (6,):
+            raise ValueError(f"urdf_joints必须是6维，得到: {urdf_joints.shape}")
+        
+        # 反向线性映射: URDF的"握紧"（较小值）对应MuJoCo的"握紧"（较大值）
+        # 映射公式: mujoco = (1 - normalized) * (mujoco_max - mujoco_min) + mujoco_min
+        # 其中 normalized = (urdf - urdf_min) / (urdf_max - urdf_min)
+        # 这样: urdf_min -> normalized=0 -> mujoco_max, urdf_max -> normalized=1 -> mujoco_min
+        mujoco_joints = np.zeros(6, dtype=np.float32)
+        for i in range(6):
+            urdf_range = self.urdf_max[i] - self.urdf_min[i]
+            if abs(urdf_range) < 1e-6:
+                # 如果范围太小，使用端点值（反向映射）
+                if abs(urdf_joints[i] - self.urdf_min[i]) < abs(urdf_joints[i] - self.urdf_max[i]):
+                    mujoco_joints[i] = self.mujoco_max[i]  # URDF接近最小值 -> MuJoCo最大值
+                else:
+                    mujoco_joints[i] = self.mujoco_min[i]  # URDF接近最大值 -> MuJoCo最小值
+            else:
+                # 归一化到[0, 1]
+                normalized = (urdf_joints[i] - self.urdf_min[i]) / urdf_range
+                # 反向映射到MuJoCo范围: (1 - normalized)使得urdf_min -> mujoco_max, urdf_max -> mujoco_min
+                mujoco_joints[i] = (1.0 - normalized) * (self.mujoco_max[i] - self.mujoco_min[i]) + self.mujoco_min[i]
+        
+        return mujoco_joints
     
     def _ensure_axisangle_continuity(self, current_rotvec: np.ndarray, side: str) -> np.ndarray:
         """
@@ -374,7 +421,7 @@ class FourierHandRetargetAPI:
             {
                 'left': {
                     'wrist_pose': (6,) [pos_xyz(3), rotvec_xyz(3)],
-                    'finger_joints': (6,) [pinky, ring, middle, index, thumb_pitch, thumb_yaw] (已符号修正)
+                    'finger_joints': (6,) [pinky, ring, middle, index, thumb_pitch, thumb_yaw] (MuJoCo控制量)
                 },
                 'right': {...}
             }
@@ -382,8 +429,9 @@ class FourierHandRetargetAPI:
         流程说明（严格按照原始retarget脚本）:
             1. 提取左右手的关键点数据
             2. 如果是episode的前N帧（warm_up_steps），执行warmup
-            3. 执行retargeting
-            4. 转换输出格式
+            3. 执行retargeting，得到URDF关节角度
+            4. 将URDF角度映射到MuJoCo控制量
+            5. 转换输出格式
         """
         state_45d = np.asarray(state_45d, dtype=np.float32).flatten()
         if state_45d.shape[0] != 45:
@@ -482,29 +530,20 @@ class FourierHandRetargetAPI:
             
             # finger_joints: 从qpos_full中提取6个主动关节
             # 顺序: [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
-            # 这是config文件中target_joint_names的顺序，直接用于仿真控制
+            # 这是config文件中target_joint_names的顺序
             desired_indices = self.desired_joint_indices[side]
-            finger_joints = qpos_full[desired_indices]  # (6,)
+            finger_joints_urdf = qpos_full[desired_indices]  # (6,) URDF角度
             
-            # 符号修正：为了与控制量统一，需要对某些关节取负号
-            # [pinky, ring, middle, index, thumb_pitch, thumb_yaw] 中
-            # pinky, ring, middle, index, thumb_yaw 需要取负号
-            # thumb_pitch 不需要取负号
-            finger_joints_corrected = finger_joints.copy()
-            finger_joints_corrected[0] = -finger_joints[0]  # pinky
-            finger_joints_corrected[1] = -finger_joints[1]  # ring
-            finger_joints_corrected[2] = -finger_joints[2]  # middle
-            finger_joints_corrected[3] = -finger_joints[3]  # index
-            # finger_joints_corrected[4] = finger_joints[4]  # thumb_pitch (保持不变)
-            finger_joints_corrected[5] = -finger_joints[5]  # thumb_yaw
+            # 将URDF角度映射到MuJoCo控制量
+            finger_joints = self._map_urdf_to_mujoco(finger_joints_urdf)  # (6,) MuJoCo控制量
             
             # 确保shape正确
             assert wrist_pose.shape == (6,), f"{side} wrist_pose shape错误: {wrist_pose.shape}, 期望(6,)"
-            assert finger_joints_corrected.shape == (6,), f"{side} finger_joints shape错误: {finger_joints_corrected.shape}, 期望(6,). desired_indices={desired_indices}, qpos_full.shape={qpos_full.shape}"
+            assert finger_joints.shape == (6,), f"{side} finger_joints shape错误: {finger_joints.shape}, 期望(6,). desired_indices={desired_indices}, qpos_full.shape={qpos_full.shape}"
             
             result[side] = {
                 'wrist_pose': wrist_pose,
-                'finger_joints': finger_joints_corrected,  # (6,) [pinky, ring, middle, index, thumb_pitch, thumb_yaw] (已符号修正)
+                'finger_joints': finger_joints,  # (6,) MuJoCo控制量 [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
             }
             
             # 增加帧计数
