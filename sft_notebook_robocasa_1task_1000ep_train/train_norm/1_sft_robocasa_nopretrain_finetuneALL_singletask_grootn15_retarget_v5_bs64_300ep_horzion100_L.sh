@@ -7,10 +7,10 @@ export PYTHONPATH=$SOURCE_PATH:$PYTHONPATH
 set -x
 cd /vla/users/lijiayi/code/groot_retarget
 dataset_list=(
-      "/vla/users/lijiayi/robocasa_datasets_full/pick_and_place_lerobot_task24_sampled_300/gr1_unified.PnPWineToCabinetClose_GR1ArmsAndWaistFourierHands_300_keypoints_v4"
+      "/vla/users/lijiayi/robocasa_datasets_full/pick_and_place_lerobot_task24_sampled_300/gr1_unified.PnPWineToCabinetClose_GR1ArmsAndWaistFourierHands_300_keypoints_v5"
 )
 data_config=(
-  "robocasa_retarget_50_horizon"
+  "robocasa_retarget_100_horizon"
 )
 embodiment_tag_list=(
    "robocasa"
@@ -40,7 +40,7 @@ fi
 num_epochs=200
 SAVE_STEPS=3000
 
-OUTPUT_DIR=/vla/users/lijiayi/code/groot_retarget/output_ckpt/n1.5_nopretrain_finetuneALL_on_robocasa_task2_retarget_v4_bs384_horizon50
+OUTPUT_DIR=/vla/users/lijiayi/code/groot_retarget/output_ckpt/n1.5_nopretrain_finetuneALL_on_robocasa_taskL_retarget_v5_bs384_horizon100
 
 if [ ! -d "$OUTPUT_DIR" ]; then
   mkdir -p "$OUTPUT_DIR"
@@ -62,7 +62,7 @@ python scripts/gr00t_finetune.py \
 --video-backend torchvision_av \
 --dataloader_num_workers $WORKERS \
 --base_model_path  $MODELPATH \
---action_horizon 50 \
+--action_horizon 100 \
 --action_dim 64 \
 --report_to tensorboard \
 --save_steps $SAVE_STEPS \

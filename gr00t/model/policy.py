@@ -141,6 +141,14 @@ class Gr00tPolicy(BasePolicy):
 
         self.use_eepose = use_eepose
         print(f"debug policy : is use eepose :{self.use_eepose}")
+        
+        # Debug模式：从环境变量读取，控制是否记录日志文件
+        self.debug_mode = os.getenv("DEBUG_MODE", "0").strip() in ("1", "true", "True", "TRUE")
+        if self.debug_mode:
+            print("[Gr00tPolicy] Debug模式已启用，将记录日志文件到 output_video_record/")
+        else:
+            print("[Gr00tPolicy] Debug模式已禁用，不会记录日志文件")
+        
         if self.use_eepose:
             
             if "robocasa" in self.embodiment_tag.value:
@@ -463,8 +471,9 @@ class Gr00tPolicy(BasePolicy):
                     
                     # ==========================================================
                     # 调试功能：保存原始观测数据到txt文件（用于可视化投影）
+                    # 仅在debug_mode开启时记录
                     # ==========================================================
-                    if not hasattr(self, '_observation_log_initialized'):
+                    if self.debug_mode and not hasattr(self, '_observation_log_initialized'):
                         from datetime import datetime
                         import os
                         
@@ -490,7 +499,7 @@ class Gr00tPolicy(BasePolicy):
                         print(f"[Observation Logger] 创建日志文件: {self._observation_log_file}")
                     
                     # 记录原始观测数据到文件（只保存batch=0的数据）
-                    if hasattr(self, '_observation_log_file'):
+                    if self.debug_mode and hasattr(self, '_observation_log_file'):
                         try:
                             with open(self._observation_log_file, 'a') as f:
                                 # 遍历时间步（T维度）
@@ -621,8 +630,9 @@ class Gr00tPolicy(BasePolicy):
             
             # ==========================================================
             # 调试功能：保存模型预测的关键点坐标到txt文件
+            # 仅在debug_mode开启时记录
             # ==========================================================
-            if not hasattr(self, '_keypoints_log_initialized'):
+            if self.debug_mode and not hasattr(self, '_keypoints_log_initialized'):
                 from datetime import datetime
                 import os
                 
@@ -660,8 +670,9 @@ class Gr00tPolicy(BasePolicy):
                 
                 # ==========================================================
                 # 保存关键点数据到txt文件（只保存batch=0的数据）
+                # 仅在debug_mode开启时记录
                 # ==========================================================
-                if hasattr(self, '_keypoints_log_file'):
+                if self.debug_mode and hasattr(self, '_keypoints_log_file'):
                     try:
                         with open(self._keypoints_log_file, 'a') as f:
                             # 遍历时间步（horizon维度）
@@ -741,8 +752,9 @@ class Gr00tPolicy(BasePolicy):
                     unnormalized_action["action.right_hand"] = retarget_right_hand_seq # 直接使用Retarget API的输出 [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
                     # ==========================================================
                     # 调试功能：保存每个chunk中每个时间步的retarget输出（wrist pose + finger joints）
+                    # 仅在debug_mode开启时记录
                     # ==========================================================
-                    if not hasattr(self, '_retarget_log_initialized'):
+                    if self.debug_mode and not hasattr(self, '_retarget_log_initialized'):
                         from datetime import datetime
                         
                         # 创建日志文件
@@ -765,7 +777,8 @@ class Gr00tPolicy(BasePolicy):
                         print(f"[Retarget Logger] 创建日志文件: {self._retarget_log_file}")
                     
                     # 保存当前chunk的retarget数据（只保存batch=0）
-                    if hasattr(self, '_retarget_log_file'):
+                    # 仅在debug_mode开启时记录
+                    if self.debug_mode and hasattr(self, '_retarget_log_file'):
                         try:
                             # API已返回正确顺序的finger joints: [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
                             # 可直接用于仿真控制
@@ -961,8 +974,9 @@ class Gr00tPolicy(BasePolicy):
             # ==========================================================
             # 新增功能：保存unnormalized_action到robocasa_action日志
             # 用于对比验证action数据是否正确传递
+            # 仅在debug_mode开启时记录
             # ==========================================================
-            if not hasattr(self, '_robocasa_action_log_initialized'):
+            if self.debug_mode and not hasattr(self, '_robocasa_action_log_initialized'):
                 from datetime import datetime
                 
                 # 创建日志文件
@@ -985,7 +999,8 @@ class Gr00tPolicy(BasePolicy):
                 print(f"[RoboCasa Action Logger] 创建日志文件: {self._robocasa_action_log_file}")
             
             # 保存当前chunk的unnormalized_action数据（只保存batch=0）
-            if hasattr(self, '_robocasa_action_log_file'):
+            # 仅在debug_mode开启时记录
+            if self.debug_mode and hasattr(self, '_robocasa_action_log_file'):
                 try:
                     with open(self._robocasa_action_log_file, 'a') as f:
                         # 遍历当前chunk的所有时间步（horizon维度，通常16步）

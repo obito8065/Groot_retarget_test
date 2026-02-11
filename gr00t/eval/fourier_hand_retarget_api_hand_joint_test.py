@@ -28,12 +28,23 @@ Fourier Hand Retarget API v2 - 严格按照原始retarget脚本实现
 
 测试脚本用法：
 ```bash
+
+#right hand
 python /vla/users/lijiayi/code/groot_retarget/gr00t/eval/fourier_hand_retarget_api_hand_joint_test.py \
-    --parquet_file  /vla/users/lijiayi/robocasa_datasets_full/pick_and_place_lerobot_task24_sampled_300/gr1_unified.PnPWineToCabinetClose_GR1ArmsAndWaistFourierHands_300_keypoints_v3/data/chunk-000/episode_000000.parquet \
-    --original_parquet_file /vla/users/lijiayi/robocasa_datasets_full/pick_and_place_lerobot_task24_sampled_300/gr1_unified.PnPWineToCabinetClose_GR1ArmsAndWaistFourierHands_300/data/chunk-000/episode_000000.parquet \
+    --parquet_file  /vla/users/lijiayi/robocasa_datasets_full/pick_and_place_lerobot_task24_sampled_300/gr1_unified.PosttrainPnPNovelFromCuttingboardToBasketSplitA_GR1ArmsAndWaistFourierHands_300_keypoints_v4_1/data/chunk-000/episode_000200.parquet \
+    --original_parquet_file /vla/users/lijiayi/robocasa_datasets_full/pick_and_place_lerobot_task24_sampled_300/gr1_unified.PosttrainPnPNovelFromCuttingboardToBasketSplitA_GR1ArmsAndWaistFourierHands_300/data/chunk-000/episode_000200.parquet \
     --action_key action \
-    --output_plot /vla/users/lijiayi/robocasa_datasets_full/pick_and_place_lerobot_task24_sampled_300/gr1_unified.PnPWineToCabinetClose_GR1ArmsAndWaistFourierHands_300_keypoints_v4 \
+    --output_plot  /vla/users/lijiayi/robocasa_datasets_full/pick_and_place_lerobot_task24_sampled_300/gr1_unified.PosttrainPnPNovelFromCuttingboardToBasketSplitA_GR1ArmsAndWaistFourierHands_300_keypoints_v4_1 \
     --max_frames 1000
+
+# left_hand
+python /vla/users/lijiayi/code/groot_retarget/gr00t/eval/fourier_hand_retarget_api_hand_joint_test.py \
+    --parquet_file  /vla/users/lijiayi/robocasa_datasets_full/pick_and_place_lerobot_task24_sampled_300/gr1_unified.PnPWineToCabinetClose_GR1ArmsAndWaistFourierHands_300_keypoints_v5/data/chunk-000/episode_000025.parquet \
+    --original_parquet_file /vla/users/lijiayi/robocasa_datasets_full/pick_and_place_lerobot_task24_sampled_300/gr1_unified.PnPWineToCabinetClose_GR1ArmsAndWaistFourierHands_300/data/chunk-000/episode_000025.parquet \
+    --action_key observation.state \
+    --output_plot  /vla/users/lijiayi/robocasa_datasets_full/pick_and_place_lerobot_task24_sampled_300/gr1_unified.PnPWineToCabinetClose_GR1ArmsAndWaistFourierHands_300_keypoints_v5 \
+    --max_frames 1000
+
 ```
 observation.state
 参数说明：
@@ -104,10 +115,10 @@ class FourierHandRetargetAPI:
     Fourier灵巧手Retarget API v2 - 严格按照原始retarget脚本实现
     
     关键特性:
-    1. ✅ 包含warmup处理（episode开始的前几帧）
-    2. ✅ 支持45维输入格式（与训练数据对齐）
-    3. ✅ 严格遵循原始retarget脚本的处理流程
-    4. ✅ 输出格式保持不变
+    1. 包含warmup处理（episode开始的前几帧）
+    2. 支持45维输入格式（与训练数据对齐）
+    3. 严格遵循原始retarget脚本的处理流程
+    4. 输出格式保持不变
     
     输入格式（45维）:
         - left_key_points(21): wrist_xyz(3) + 5tips_xyz(15) + wrist_rotvec(3)
@@ -131,7 +142,7 @@ class FourierHandRetargetAPI:
         self, 
         robot_name: str = "fourier",
         hand_sides: List[str] = ["left", "right"],
-        wrist_enhance_weight: float = 2.0,
+        wrist_enhance_weight: float = 1.0,
         warm_up_steps: int = 1,
     ):
         """
@@ -252,6 +263,37 @@ class FourierHandRetargetAPI:
             print(f"  Indices in qpos: {self.desired_joint_indices[side]}")
             print(f"  Total joints in qpos: {len(retargeting.joint_names)}")
             print(f"  Hand base link index: {hand_base_link_idx} (link name: {links[hand_base_link_idx].name})")
+            
+            # 打印关节限制信息（用于调试retarget输出只有一半的问题）
+            if hasattr(retargeting, 'joint_limits') and retargeting.joint_limits is not None:
+                print(f"\n  Joint Limits (retargeting使用的限制):")
+                for i, joint_name in enumerate(desired_finger_joint_names):
+                    joint_idx_in_target = None
+                    for j, name in enumerate(retargeting.joint_names):
+                        if name == joint_name:
+                            joint_idx_in_target = j
+                            break
+                    if joint_idx_in_target is not None and joint_idx_in_target < len(retargeting.joint_limits):
+                        limits = retargeting.joint_limits[joint_idx_in_target]
+                        print(f"    {joint_name}: [{limits[0]:.4f}, {limits[1]:.4f}] rad")
+                    else:
+                        print(f"    {joint_name}: (未找到限制)")
+            
+            # 打印robot的joint_limits（从URDF读取的原始限制）
+            if hasattr(retargeting.optimizer, 'robot') and hasattr(retargeting.optimizer.robot, 'joint_limits'):
+                robot_limits = retargeting.optimizer.robot.joint_limits
+                print(f"\n  Robot Joint Limits (URDF原始限制):")
+                for i, joint_name in enumerate(desired_finger_joint_names):
+                    joint_idx_in_robot = None
+                    for j, name in enumerate(retargeting.optimizer.robot.dof_joint_names):
+                        if name == joint_name:
+                            joint_idx_in_robot = j
+                            break
+                    if joint_idx_in_robot is not None and joint_idx_in_robot < len(robot_limits):
+                        limits = robot_limits[joint_idx_in_robot]
+                        print(f"    {joint_name}: [{limits[0]:.4f}, {limits[1]:.4f}] rad")
+                    else:
+                        print(f"    {joint_name}: (未找到限制)")
         
         print(f"[FourierHandRetargetAPI] Initialized successfully")
         print(f"  Robot: {robot_name}, Sides: {hand_sides}")
@@ -506,6 +548,9 @@ class FourierHandRetargetAPI:
             # 因为 dummy joint 给出的是 root_link 的位姿，不是 hand_base_link 的位姿
             sapien_robot = self.sapien_robots[side]
             sapien_robot.set_qpos(qpos_full)
+
+
+
             hand_base_link_idx = self.hand_base_link_indices[side]
             link_pose = sapien_robot.get_links()[hand_base_link_idx].entity_pose  # sapien.Pose
             
@@ -556,6 +601,8 @@ class FourierHandRetargetAPI:
             finger_joints_corrected[3] = -finger_joints[3]  # index
             # finger_joints_corrected[4] = finger_joints[4]  # thumb_pitch (保持不变)
             finger_joints_corrected[5] = -finger_joints[5]  # thumb_yaw
+
+            
             
             # 确保shape正确
             assert wrist_pose.shape == (6,), f"{side} wrist_pose shape错误: {wrist_pose.shape}, 期望(6,)"

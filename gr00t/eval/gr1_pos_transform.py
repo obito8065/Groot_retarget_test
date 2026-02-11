@@ -21,6 +21,7 @@ class GR1RetargetConfig:
 
     urdf_path: str = str(
         Path("/vla/users/lijiayi/code/groot_retarget/gr00t/eval/robot_assets/GR1T2/urdf/GR1T2_fourier_hand_6dof.urdf")
+        # Path("/vla/users/lijiayi/code/groot_retarget/gr00t/eval/robot_assets/GR1T2/urdf/GR1T2_nohand_original.urdf") # 原始没修改角度的urdf
     )
     camera_intrinsics: dict = field(
         default_factory=lambda: {"fx": 502.8689, "fy": 502.8689, "cx": 640.0, "cy": 400.0}
@@ -77,14 +78,15 @@ class BodyRetargeter:
         base_link = "torso_link"
         
         # 创建 v0.py 中使用的所有长运动学链
+        # 修改：使用 hand_base_link 作为末端，与 FK (body_retarget_robocasa_eepose_keypoints_v5.py) 保持一致
         self.kin_head = KDLKinematics(robot_urdf, base_link, "head_pitch_link", tree)
-        self.kin_left_arm = KDLKinematics(robot_urdf, base_link, "left_hand_pitch_link", tree)
-        self.kin_right_arm = KDLKinematics(robot_urdf, base_link, "right_hand_pitch_link", tree)
+        self.kin_left_arm = KDLKinematics(robot_urdf, base_link, "L_hand_base_link", tree)
+        self.kin_right_arm = KDLKinematics(robot_urdf, base_link, "R_hand_base_link", tree)
         
         # 直接保存 PyKDL chain 以便 IK 求解使用
         self.chain_head = tree.getChain(base_link, "head_pitch_link")
-        self.chain_left_arm = tree.getChain(base_link, "left_hand_pitch_link")
-        self.chain_right_arm = tree.getChain(base_link, "right_hand_pitch_link")
+        self.chain_left_arm = tree.getChain(base_link, "L_hand_base_link")
+        self.chain_right_arm = tree.getChain(base_link, "R_hand_base_link")
         
         # 定义相机在头部坐标系中的固定变换 (外参)
         t_cam_in_head = [2.650 - 2.65017178 + 0.23, -1.944 + 2.174 - 0.23, 1.538 - 1.4475]

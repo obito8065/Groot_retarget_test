@@ -20,6 +20,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
 import argparse
+from matplotlib.ticker import MultipleLocator
 
 
 def parse_predicted_keypoints(file_path):
@@ -41,28 +42,28 @@ def parse_predicted_keypoints(file_path):
             
             # 解析数据行
             parts = line.strip().split()
-            if len(parts) < 43:  # 至少需要43个字段
+            if len(parts) < 44:  # 至少需要44个字段（0-43）
                 continue
             
             # frame_id(0), t(1)
-            # 左手腕: L_wrist_xyz(2-4), L_wrist_rotvec(19-21)
+            # 左手腕: L_wrist_xyz(2-4), L_wrist_rotvec(20-22)
             left_wrist.append([
                 float(parts[2]),   # L_wrist_x
                 float(parts[3]),   # L_wrist_y
                 float(parts[4]),   # L_wrist_z
-                float(parts[19]),  # L_wrist_rotvec_x
-                float(parts[20]),  # L_wrist_rotvec_y
-                float(parts[21]),  # L_wrist_rotvec_z
+                float(parts[20]),  # L_wrist_rotvec_x (修正：从19改为20)
+                float(parts[21]),  # L_wrist_rotvec_y (修正：从20改为21)
+                float(parts[22]),  # L_wrist_rotvec_z (修正：从21改为22)
             ])
             
-            # 右手腕: R_wrist_xyz(22-24), R_wrist_rotvec(40-42)
+            # 右手腕: R_wrist_xyz(23-25), R_wrist_rotvec(41-43)
             right_wrist.append([
-                float(parts[22]),  # R_wrist_x
-                float(parts[23]),  # R_wrist_y
-                float(parts[24]),  # R_wrist_z
-                float(parts[40]),  # R_wrist_rotvec_x
-                float(parts[41]),  # R_wrist_rotvec_y
-                float(parts[42]),  # R_wrist_rotvec_z
+                float(parts[23]),  # R_wrist_x (修正：从22改为23)
+                float(parts[24]),  # R_wrist_y (修正：从23改为24)
+                float(parts[25]),  # R_wrist_z (修正：从24改为25)
+                float(parts[41]),  # R_wrist_rotvec_x (修正：从40改为41)
+                float(parts[42]),  # R_wrist_rotvec_y (修正：从41改为42)
+                float(parts[43]),  # R_wrist_rotvec_z (修正：从42改为43)
             ])
     
     return np.array(left_wrist), np.array(right_wrist)
@@ -151,7 +152,9 @@ def visualize_comparison(pred_file, retarget_file, output_path=None):
     fig, axes = plt.subplots(6, 2, figsize=(16, 20))
     fig.suptitle('Wrist Pose Trajectory: Predicted Keypoints vs Retargeted Actions', 
                  fontsize=16, fontweight='bold')
-    
+
+    x_major_locator = MultipleLocator(50)
+
     # 绘制每个维度的对比
     for dim_idx in range(6):
         # 左手
@@ -159,7 +162,11 @@ def visualize_comparison(pred_file, retarget_file, output_path=None):
         ax_left.scatter(time_steps, left_pred[:, dim_idx], c='blue', label='Predicted', s=5, alpha=0.7)
         ax_left.scatter(time_steps, left_retarget[:, dim_idx], c='red', label='Retargeted', s=5, alpha=0.7)
         ax_left.set_ylabel(f'Left Wrist {dim_names[dim_idx]}', fontsize=11)
-        ax_left.grid(True, alpha=0.3)
+        
+        # 设置网格线间隔
+        ax_left.xaxis.set_major_locator(x_major_locator)
+        ax_left.grid(True, alpha=0.3, which='major')  # 主要网格线
+        
         ax_left.legend(loc='best')
         if dim_idx == 0:
             ax_left.set_title('Left Wrist', fontsize=12, fontweight='bold')
@@ -171,7 +178,11 @@ def visualize_comparison(pred_file, retarget_file, output_path=None):
         ax_right.scatter(time_steps, right_pred[:, dim_idx], c='blue', label='Predicted', s=5, alpha=0.7)
         ax_right.scatter(time_steps, right_retarget[:, dim_idx], c='red', label='Retargeted', s=5, alpha=0.7)
         ax_right.set_ylabel(f'Right Wrist {dim_names[dim_idx]}', fontsize=11)
-        ax_right.grid(True, alpha=0.3)
+        
+        # 设置网格线间隔
+        ax_right.xaxis.set_major_locator(x_major_locator)
+        ax_right.grid(True, alpha=0.3, which='major')  # 主要网格线
+        
         ax_right.legend(loc='best')
         if dim_idx == 0:
             ax_right.set_title('Right Wrist', fontsize=12, fontweight='bold')

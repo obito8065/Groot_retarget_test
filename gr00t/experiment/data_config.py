@@ -2691,6 +2691,35 @@ class RoboCasaEgoDexRetarget50HorizonDataConfig(FourierGr1ArmsOnlyDataConfig):
 
 ###########################################################################################
 
+class RoboCasaEgoDexRetarget100HorizonDataConfig(RoboCasaEgoDexRetarget50HorizonDataConfig):
+    video_keys = ["video.ego_view"]
+    state_keys = [
+        "state.left_key_points",
+        "state.right_key_points",
+        "state.waist",
+    ]
+    action_keys = [
+        "action.left_key_points",
+        "action.right_key_points",
+        "action.waist",
+    ]
+    language_keys = ["annotation.human.coarse_action"]
+    observation_indices = [0]
+    action_indices = list(range(100))
+
+    def modality_config(self):
+        return super().modality_config()
+
+    def transform(self):
+        return super().transform()
+
+
+
+###########################################################################################
+
+
+
+
 
 DATA_CONFIG_MAP = {
     "robotwin": RoboTwinDataConfig(),
@@ -2702,6 +2731,7 @@ DATA_CONFIG_MAP = {
     "robocasa": RoboCasaDataConfig(),
     "robocasa_retarget": RoboCasaEgoDexRetargetDataConfig(),
     "robocasa_retarget_50_horizon": RoboCasaEgoDexRetarget50HorizonDataConfig(),
+    "robocasa_retarget_100_horizon": RoboCasaEgoDexRetarget100HorizonDataConfig(),
     "robocasa_egodex": RoboCasaEgoDexDataConfig(),
     "fourier_gr1_arms_waist2egodex" : FourierGr1ArmWaist2EgoDexDataConfig(),
     "fourier_gr1_arms_waist": FourierGr1ArmsWaistDataConfig(),

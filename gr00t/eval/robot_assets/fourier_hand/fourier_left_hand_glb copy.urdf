@@ -231,7 +231,7 @@
       velocity="0.8" />
     <mimic
       joint="L_thumb_proximal_pitch_joint"
-      multiplier="1"
+      multiplier="0.974"
       offset="0" />
   </joint>
 
@@ -372,7 +372,7 @@
       velocity="0.8" />
     <mimic
       joint="L_index_proximal_joint"
-      multiplier="1"
+      multiplier="1.128"
       offset="0" />
   </joint>
 
@@ -513,7 +513,7 @@
       velocity="0.8" />
     <mimic
       joint="L_middle_proximal_joint"
-      multiplier="1"
+      multiplier="1.131"
       offset="0" />
   </joint>
 
@@ -654,7 +654,7 @@
       velocity="0.8" />
     <mimic
       joint="L_ring_proximal_joint"
-      multiplier="1"
+      multiplier="1.143"
       offset="0" />
   </joint>
 
@@ -795,7 +795,7 @@
       velocity="0.8" />
     <mimic
       joint="L_pinky_proximal_joint"
-      multiplier="1"
+      multiplier="1.129"
       offset="0" />
   </joint>
 
