@@ -1167,6 +1167,72 @@ class Gr00tPolicy(BasePolicy):
             # And the step is positive
             assert (delta_indices[1] - delta_indices[0]) > 0, f"{delta_indices=}"
 
+    def _save_obs_images_for_debug(self, obs_dict: Dict[str, Any]) -> None:
+        """
+        保存输入模型的 obs 图像到 output_video_record/obs_debug/run_xxx/obs{N}/ 用于调试。
+        每次 get_action 调用保存一次，命名为 obs0, obs1, ...
+        """
+        from datetime import datetime
+        try:
+            if self._obs_image_log_dir is None:
+                log_dir = Path("/vla/users/lijiayi/code/groot_retarget/output_video_record/obs_debug")
+                log_dir.mkdir(parents=True, exist_ok=True)
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                self._obs_image_log_dir = log_dir / f"run_{ts}"
+                self._obs_image_log_dir.mkdir(parents=True, exist_ok=True)
+                print(f"[Obs Image Debug] 保存目录: {self._obs_image_log_dir}")
+            video_arr, video_key = None, None
+            for k in obs_dict:
+                if k.startswith("video."):
+                    video_arr = np.asarray(obs_dict[k])
+                    video_key = k
+                    break
+            if video_arr is None:
+                return
+            nd = video_arr.ndim
+            if nd == 5:
+                s = video_arr.shape
+                if s[-1] in (1, 3, 4):
+                    if s[0] <= s[1]:
+                        frames = video_arr[0]
+                    else:
+                        frames = video_arr[:, 0]
+                else:
+                    frames = video_arr[0]
+            elif nd == 6:
+                frames = video_arr[0, 0]
+            else:
+                print(f"[Obs Image Debug] 跳过: {video_key} shape={video_arr.shape}")
+                return
+            if frames.ndim != 4 or frames.shape[-1] not in (1, 3, 4):
+                return
+            n_frames = frames.shape[0]
+            obs_dir = self._obs_image_log_dir / f"obs{self._obs_image_counter}"
+            obs_dir.mkdir(parents=True, exist_ok=True)
+            for t in range(n_frames):
+                img = np.asarray(frames[t])
+                if img.dtype != np.uint8:
+                    img = (img * 255).astype(np.uint8) if img.max() <= 1.0 else img.astype(np.uint8)
+                img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR) if img.shape[-1] == 3 else img
+                cv2.imwrite(str(obs_dir / f"frame_{t:03d}.png"), img_bgr)
+            n_cols = min(10, int(n_frames ** 0.5) + 1)
+            n_rows = (n_frames + n_cols - 1) // n_cols
+            h, w = frames.shape[1], frames.shape[2]
+            pad = 2
+            grid = np.ones((n_rows * (h + pad) + pad, n_cols * (w + pad) + pad, 3), dtype=np.uint8) * 255
+            for t in range(n_frames):
+                r, c = t // n_cols, t % n_cols
+                img = frames[t]
+                if img.dtype != np.uint8:
+                    img = (img * 255).astype(np.uint8) if img.max() <= 1.0 else img.astype(np.uint8)
+                if img.shape[-1] == 3:
+                    grid[pad + r * (h + pad):pad + r * (h + pad) + h, pad + c * (w + pad):pad + c * (w + pad) + w] = img
+            cv2.imwrite(str(self._obs_image_log_dir / f"obs{self._obs_image_counter}_grid.png"), cv2.cvtColor(grid, cv2.COLOR_RGB2BGR))
+            print(f"[Obs Image Debug] obs{self._obs_image_counter}: {n_frames} 帧 -> {obs_dir.name}, 网格 -> obs{self._obs_image_counter}_grid.png")
+            self._obs_image_counter += 1
+        except Exception as e:
+            print(f"[Obs Image Debug] 保存失败: {e}")
+
     # 组成44DOF向量的辅助函数
     @staticmethod
     def _build_full_44dof_vector(obs_dict):

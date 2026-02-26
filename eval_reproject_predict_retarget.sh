@@ -24,9 +24,9 @@ python eval_after_retarget_reprojector_cli.py \
 
 # 3、对比 predicted keypoints 和 retargeted actions 中的手腕轨迹
 python eval_check_pre_retarget_traj.py \
-    --pred-file /vla/users/lijiayi/code/groot_retarget/output_video_record/output_retarget_1tasks_1000ep/n1.5_nopretrain_finetuneALL_on_robocasa_task2_retarget_v5_bs384_horizon50_taskR/24ksteps-modify0/predicted_keypoints_20260210_113800.txt \
-    --retarget-file /vla/users/lijiayi/code/groot_retarget/output_video_record/output_retarget_1tasks_1000ep/n1.5_nopretrain_finetuneALL_on_robocasa_task2_retarget_v5_bs384_horizon50_taskR/24ksteps-modify0/retargeted_actions_20260210_113801.txt \
-    --output /vla/users/lijiayi/code/groot_retarget/output_video_record/wrist_trajectory_pred_vs_retarget.png
+    --pred-file /vla/users/lijiayi/unifytip_groot/output_video_record/predicted_keypoints_20260225_171855.txt \
+    --retarget-file /vla/users/lijiayi/unifytip_groot/output_video_record/retargeted_actions_20260225_171855.txt \
+    --output /vla/users/lijiayi/unifytip_groot/output_video_record/wrist_trajectory_pred_vs_retarget.png
 
 
 # 4、可视化左右臂各7个关节的角度变化趋势，并检测IK大角度变化

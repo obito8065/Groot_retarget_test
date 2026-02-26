@@ -20,7 +20,7 @@ class GR1RetargetConfig:
     """Main configuration for GR1 retarget."""
 
     urdf_path: str = str(
-        Path("/vla/users/lijiayi/code/groot_retarget/gr00t/eval/robot_assets/GR1T2/urdf/GR1T2_fourier_hand_6dof.urdf")
+        Path("/vla/users/lijiayi/code/robot_retarget/retarget/body_retarget/GR1T2/urdf/GR1T2_fourier_hand_6dof.urdf")
         # Path("/vla/users/lijiayi/code/groot_retarget/gr00t/eval/robot_assets/GR1T2/urdf/GR1T2_nohand_original.urdf") # 原始没修改角度的urdf
     )
     camera_intrinsics: dict = field(

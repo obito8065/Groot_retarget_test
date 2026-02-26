@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Union
 from dataclasses import dataclass, field
 import os
-import time
+
 
 import numpy as np
 import torch
@@ -141,6 +141,14 @@ class Gr00tPolicy(BasePolicy):
 
         self.use_eepose = use_eepose
         print(f"debug policy : is use eepose :{self.use_eepose}")
+        
+        # Debug模式：从环境变量读取，控制是否记录日志文件
+        self.debug_mode = os.getenv("DEBUG_MODE", "0").strip() in ("1", "true", "True", "TRUE")
+        if self.debug_mode:
+            print("[Gr00tPolicy] Debug模式已启用，将记录日志文件到 output_video_record/")
+        else:
+            print("[Gr00tPolicy] Debug模式已禁用，不会记录日志文件")
+        
         if self.use_eepose:
             
             if "robocasa" in self.embodiment_tag.value:
@@ -176,11 +184,12 @@ class Gr00tPolicy(BasePolicy):
                 # -----------------------------------------------------
                 # FK 输入 finger6 顺序: [index, middle, ring, pinky, thumb_yaw, thumb_pitch]
                 # FK 输出 keypoints 顺序: [wrist, thumb, index, middle, ring, pinky] (6, 3)
-                from gr00t.eval.gr1_hand_fk import PolicyFourierHandKeypoints
+                from gr00t.eval.gr1_hand_fk import PolicyFourierHandKeypoints, convert_robocasa_hand_to_fk_input
                 self.policy_fourier_hand_keypoints = PolicyFourierHandKeypoints(
                     left_urdf=Path("gr00t/eval/robot_assets/fourier_hand/fourier_left_hand.urdf"), 
                     right_urdf=Path("gr00t/eval/robot_assets/fourier_hand/fourier_right_hand.urdf")
                 )
+                self._convert_robocasa_hand = convert_robocasa_hand_to_fk_input
                 print("✓ Initialized Fourier Hand FK for Step 1 (input processing).")
                 
                 # -----------------------------------------------------
@@ -463,8 +472,9 @@ class Gr00tPolicy(BasePolicy):
                     
                     # ==========================================================
                     # 调试功能：保存原始观测数据到txt文件（用于可视化投影）
+                    # 仅在debug_mode开启时记录
                     # ==========================================================
-                    if not hasattr(self, '_observation_log_initialized'):
+                    if self.debug_mode and not hasattr(self, '_observation_log_initialized'):
                         from datetime import datetime
                         import os
                         
@@ -490,7 +500,7 @@ class Gr00tPolicy(BasePolicy):
                         print(f"[Observation Logger] 创建日志文件: {self._observation_log_file}")
                     
                     # 记录原始观测数据到文件（只保存batch=0的数据）
-                    if hasattr(self, '_observation_log_file'):
+                    if self.debug_mode and hasattr(self, '_observation_log_file'):
                         try:
                             with open(self._observation_log_file, 'a') as f:
                                 # 遍历时间步（T维度）
@@ -519,12 +529,19 @@ class Gr00tPolicy(BasePolicy):
                             print(f"[Observation Logger] 写入日志失败: {e}")
                     # ==========================================================
                     
-                    # 数据集格式和FK期望格式一致，不需要重排序
-                    # Robocasa数据集: [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
-                    # FK期望:        [index, middle, ring, pinky, thumb_yaw, thumb_pitch]
-                    # 只交换最后两个维度
-                    left_hand_fk = left_hand_orig[..., [3, 2, 1, 0, 5, 4]]
-                    right_hand_fk = right_hand_orig[..., [3, 2, 1, 0, 5, 4]]
+
+                    # # 数据集格式和FK期望格式一致，不需要重排序
+                    # # Robocasa数据集: [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
+                    # # FK期望:        [index, middle, ring, pinky, thumb_yaw, thumb_pitch]
+                    # # 只交换最后两个维度
+                    # left_hand_fk = left_hand_orig[..., [3, 2, 1, 0, 5, 4]]
+                    # right_hand_fk = right_hand_orig[..., [3, 2, 1, 0, 5, 4]]
+
+                    # 与 body_retarget 对齐：先对 finger 做 sign flip + clip，再重排为 FK 顺序
+                    # Robocasa 格式: [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
+                    # pinky/ring/middle/index/thumb_yaw 取负; thumb_pitch 保持; 再 clip 到 URDF 限位
+                    left_hand_fk = self._convert_robocasa_hand(left_hand_orig)
+                    right_hand_fk = self._convert_robocasa_hand(right_hand_orig)
                                         
                     # 执行 FK 计算
                     # 输入：
@@ -621,8 +638,9 @@ class Gr00tPolicy(BasePolicy):
             
             # ==========================================================
             # 调试功能：保存模型预测的关键点坐标到txt文件
+            # 仅在debug_mode开启时记录
             # ==========================================================
-            if not hasattr(self, '_keypoints_log_initialized'):
+            if self.debug_mode and not hasattr(self, '_keypoints_log_initialized'):
                 from datetime import datetime
                 import os
                 
@@ -660,8 +678,9 @@ class Gr00tPolicy(BasePolicy):
                 
                 # ==========================================================
                 # 保存关键点数据到txt文件（只保存batch=0的数据）
+                # 仅在debug_mode开启时记录
                 # ==========================================================
-                if hasattr(self, '_keypoints_log_file'):
+                if self.debug_mode and hasattr(self, '_keypoints_log_file'):
                     try:
                         with open(self._keypoints_log_file, 'a') as f:
                             # 遍历时间步（horizon维度）
@@ -733,24 +752,17 @@ class Gr00tPolicy(BasePolicy):
                     #   - action.right_arm: (B, horizon, 6) = [R_wrist_xyz(3), R_rotvec(3)]
                     #   - action.right_hand: (B, horizon, 6) = [R_finger_q1~6] (数据集格式)
 
-                    # 重排序finger joints: Retarget API输出格式 -> RoboCasa数据集格式
-                    # API输出格式: [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
-                    # 数据集格式: [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
                     
                     unnormalized_action["action.left_arm"] = retarget_left_arm_seq
-                    # 只有索引0,1,2,3,5需要取负号，索引4(thumb_pitch)不需要
-                    left_hand_processed = retarget_left_hand_seq.copy()
-                    left_hand_processed[..., [0, 1, 2, 3, 5]] = -left_hand_processed[..., [0, 1, 2, 3, 5]]
-                    unnormalized_action["action.left_hand"] = left_hand_processed # [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
+                    unnormalized_action["action.left_hand"] = retarget_left_hand_seq # [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
                     
                     unnormalized_action["action.right_arm"] = retarget_right_arm_seq
-                    right_hand_processed = retarget_right_hand_seq.copy()
-                    right_hand_processed[..., [0, 1, 2, 3, 5]] = -right_hand_processed[..., [0, 1, 2, 3, 5]]
-                    unnormalized_action["action.right_hand"] = right_hand_processed # 直接使用Retarget API的输出 [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
+                    unnormalized_action["action.right_hand"] = retarget_right_hand_seq # 直接使用Retarget API的输出 [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
                     # ==========================================================
                     # 调试功能：保存每个chunk中每个时间步的retarget输出（wrist pose + finger joints）
+                    # 仅在debug_mode开启时记录
                     # ==========================================================
-                    if not hasattr(self, '_retarget_log_initialized'):
+                    if self.debug_mode and not hasattr(self, '_retarget_log_initialized'):
                         from datetime import datetime
                         
                         # 创建日志文件
@@ -773,7 +785,8 @@ class Gr00tPolicy(BasePolicy):
                         print(f"[Retarget Logger] 创建日志文件: {self._retarget_log_file}")
                     
                     # 保存当前chunk的retarget数据（只保存batch=0）
-                    if hasattr(self, '_retarget_log_file'):
+                    # 仅在debug_mode开启时记录
+                    if self.debug_mode and hasattr(self, '_retarget_log_file'):
                         try:
                             # API已返回正确顺序的finger joints: [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
                             # 可直接用于仿真控制
@@ -853,10 +866,6 @@ class Gr00tPolicy(BasePolicy):
                 # 初始化用于存储IK结果的数组
                 q_left_arm_seq = np.zeros((batch_size, horizon, 7)) # 目标是7-DoF
                 q_right_arm_seq = np.zeros((batch_size, horizon, 7)) # 目标是7-DoF
-                
-                # 初始化用于存储时间戳的数组（每个时间步的输入和输出时间戳）
-                ik_timestamps_input = []   # 存储每个时间步的IK输入时间戳
-                ik_timestamps_output = []  # 存储每个时间步的IK输出时间戳
 
                 # 使用输入时的原始7-DoF手臂状态作为第一个时间步的IK初始猜测
                 # 形状从 (B, 1, 7) 变为 (B, 7)
@@ -865,9 +874,6 @@ class Gr00tPolicy(BasePolicy):
 
                 # 遍历动作序列的每一个时间步 (从 0 到 15)
                 for t in range(horizon):
-                    # 记录IK输入时间戳（在获取输入数据时）
-                    timestamp_input = time.time()
-                    
                     # 提取当前时间步 t 的EE Pose动作，形状为 (B, 6)
                     left_eepose_t = pred_left_eepose_seq[:, t, :]
                     right_eepose_t = pred_right_eepose_seq[:, t, :]
@@ -889,19 +895,12 @@ class Gr00tPolicy(BasePolicy):
                         q_init_left=q_init_left,
                         q_init_right=q_init_right
                     )
-                    
-                    # 记录IK输出时间戳（在IK计算完成后）
-                    timestamp_output = time.time()
 
                     # 将计算出的关节角存储到结果序列中
                     if q_left_arm_t is not None:
                         q_left_arm_seq[:, t, :] = q_left_arm_t
                     if q_right_arm_t is not None:
                         q_right_arm_seq[:, t, :] = q_right_arm_t
-                    
-                    # 存储时间戳
-                    ik_timestamps_input.append(timestamp_input)
-                    ik_timestamps_output.append(timestamp_output)
                     
                     # 使用当前步的IK解作为下一步的初始猜测，以保证动作的连续性
                     q_init_left = q_left_arm_t
@@ -981,93 +980,72 @@ class Gr00tPolicy(BasePolicy):
             
 
             # ==========================================================
-            # 新增功能：保存IK输入和输出到robocasa_action日志
-            # 用于分析轴角跳变是在IK前还是IK后产生的
+            # 新增功能：保存unnormalized_action到robocasa_action日志
+            # 用于对比验证action数据是否正确传递
+            # 仅在debug_mode开启时记录
             # ==========================================================
-            if "robocasa" in self.embodiment_tag.value:
-                if not hasattr(self, '_robocasa_action_log_initialized'):
-                    from datetime import datetime
-                    
-                    # 创建日志文件
-                    log_dir = Path("/vla/users/lijiayi/code/groot_retarget/output_video_record")
-                    log_dir.mkdir(parents=True, exist_ok=True)
-                    
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    self._robocasa_action_log_file = log_dir / f"robocasa_action_{timestamp}.txt"
-                    self._robocasa_action_chunk_counter = 0
-                    
-                    # 写入文件头
-                    with open(self._robocasa_action_log_file, 'w') as f:
-                        f.write("# RoboCasa IK输入和输出数据（每个chunk的每个时间步）\n")
-                        f.write("# 格式：chunk_id t timestamp_input timestamp_output ")
-                        f.write("L_IK_input_pos_x L_IK_input_pos_y L_IK_input_pos_z L_IK_input_rotvec_x L_IK_input_rotvec_y L_IK_input_rotvec_z ")  # IK输入：wrist pose (6)
-                        f.write("L_IK_output_q1 L_IK_output_q2 L_IK_output_q3 L_IK_output_q4 L_IK_output_q5 L_IK_output_q6 L_IK_output_q7 ")  # IK输出：arm joints (7)
-                        f.write("R_IK_input_pos_x R_IK_input_pos_y R_IK_input_pos_z R_IK_input_rotvec_x R_IK_input_rotvec_y R_IK_input_rotvec_z ")  # IK输入：wrist pose (6)
-                        f.write("R_IK_output_q1 R_IK_output_q2 R_IK_output_q3 R_IK_output_q4 R_IK_output_q5 R_IK_output_q6 R_IK_output_q7 ")  # IK输出：arm joints (7)
-                        f.write("L_finger_q1 L_finger_q2 L_finger_q3 L_finger_q4 L_finger_q5 L_finger_q6 ")  # finger joints (6)
-                        f.write("R_finger_q1 R_finger_q2 R_finger_q3 R_finger_q4 R_finger_q5 R_finger_q6 ")  # finger joints (6)
-                        f.write("waist_q1 waist_q2 waist_q3\n")  # waist (3)
-                        f.write("# timestamp_input: IK输入时的真实时间戳（time.time()），用于分析IK前的轴角跳变\n")
-                        f.write("# timestamp_output: IK输出时的真实时间戳（time.time()），用于分析IK后的关节角度跳变\n")
-                        f.write("# IK输入：wrist pose = [wrist_xyz(3), rotvec(3)] - 用于分析IK前的轴角跳变\n")
-                        f.write("# IK输出：arm joint angles (7) - 用于分析IK后的关节角度\n")
-                        f.write("# L_finger_joint_names_6: pinky, ring, middle, index, thumb_pitch, thumb_yaw]\n")
-                        f.write("# batch=0的数据，每个chunk的16个时间步(t=0~15)各记录一行\n")
-                        f.write("#\n")
-                    
-                    self._robocasa_action_log_initialized = True
-                    print(f"[RoboCasa Action Logger] 创建日志文件: {self._robocasa_action_log_file}")
+            if self.debug_mode and not hasattr(self, '_robocasa_action_log_initialized'):
+                from datetime import datetime
                 
-                # 保存当前chunk的IK输入和输出数据（只保存batch=0）
-                if hasattr(self, '_robocasa_action_log_file'):
-                    try:
-                        with open(self._robocasa_action_log_file, 'a') as f:
-                            # 遍历当前chunk的所有时间步（horizon维度，通常16步）
-                            for t in range(horizon):
-                                # IK输入：wrist pose（IK处理前的数据）
-                                left_ik_input = pred_left_eepose_seq[0, t, :]      # (6,) = [wrist_xyz(3), rotvec(3)]
-                                right_ik_input = pred_right_eepose_seq[0, t, :]   # (6,)
-                                
-                                # IK输出：arm joint angles（IK处理后的数据）
-                                left_ik_output = q_left_arm_seq[0, t, :]          # (7,) - arm joint angles
-                                right_ik_output = q_right_arm_seq[0, t, :]        # (7,)
-                                
-                                # 其他数据：finger joints 和 waist
-                                left_hand = unnormalized_action["action.left_hand"][0, t, :]    # (6,) - finger joints
-                                right_hand = unnormalized_action["action.right_hand"][0, t, :]  # (6,)
-                                waist = unnormalized_action["action.waist"][0, t, :]          # (3,) - waist joint angles
-                                
-                                # 获取该时间步的输入和输出时间戳
-                                timestamp_input = ik_timestamps_input[t]
-                                timestamp_output = ik_timestamps_output[t]
-                                
-                                # 拼接完整数据：IK输入 + IK输出 + finger + waist
-                                full_data = np.concatenate([
-                                    left_ik_input,    # L_IK_input: wrist_xyz(3) + rotvec(3) = 6
-                                    left_ik_output,   # L_IK_output: arm_q1~q7 = 7
-                                    right_ik_input,   # R_IK_input: wrist_xyz(3) + rotvec(3) = 6
-                                    right_ik_output,  # R_IK_output: arm_q1~q7 = 7
-                                    left_hand,        # L_finger_q1~6 = 6
-                                    right_hand,       # R_finger_q1~6 = 6
-                                    waist             # waist_q1~q3 = 3
-                                ])  # 总共：6+7+6+7+6+6+3 = 41个值
-                                
-                                # 写入一行：chunk_id t timestamp_input timestamp_output 41个数值
-                                line = f"{self._robocasa_action_chunk_counter} {t} {timestamp_input:.9f} {timestamp_output:.9f}"
-                                for val in full_data:
-                                    line += f" {val:.6f}"
-                                line += "\n"
-                                f.write(line)
-                        
-                        self._robocasa_action_chunk_counter += 1
-                        
-                        # 每10个chunk打印一次进度
-                        if self._robocasa_action_chunk_counter % 10 == 0:
-                            print(f"[RoboCasa Action Logger] 已保存 {self._robocasa_action_chunk_counter} 个chunk数据")
-                    except Exception as e:
-                        print(f"[RoboCasa Action Logger] 保存失败: {e}")
-                        import traceback
-                        traceback.print_exc()
+                # 创建日志文件
+                log_dir = Path("/vla/users/lijiayi/code/groot_retarget/output_video_record")
+                log_dir.mkdir(parents=True, exist_ok=True)
+                
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                self._robocasa_action_log_file = log_dir / f"robocasa_action_{timestamp}.txt"
+                self._robocasa_action_chunk_counter = 0
+                
+                # 写入文件头
+                with open(self._robocasa_action_log_file, 'w') as f:
+                    f.write("# RoboCasa unnormalized_action数据（每个chunk的每个时间步）\n")
+                    f.write("# 格式：chunk_id t L_arm_q1 L_arm_q2 L_arm_q3 L_arm_q4 L_arm_q5 L_arm_q6 L_arm_q7 L_finger_q1 L_finger_q2 L_finger_q3 L_finger_q4 L_finger_q5 L_finger_q6 R_arm_q1 R_arm_q2 R_arm_q3 R_arm_q4 R_arm_q5 R_arm_q6 R_arm_q7 R_finger_q1 R_finger_q2 R_finger_q3 R_finger_q4 R_finger_q5 R_finger_q6 waist_q1 waist_q2 waist_q3\n")
+                    f.write("# L_finger_joint_names_6: pinky, ring, middle, index, thumb_pitch, thumb_yaw]\n")
+                    f.write("# batch=0的数据，每个chunk的16个时间步(t=0~15)各记录一行\n")
+                    f.write("#\n")
+                
+                self._robocasa_action_log_initialized = True
+                print(f"[RoboCasa Action Logger] 创建日志文件: {self._robocasa_action_log_file}")
+            
+            # 保存当前chunk的unnormalized_action数据（只保存batch=0）
+            # 仅在debug_mode开启时记录
+            if self.debug_mode and hasattr(self, '_robocasa_action_log_file'):
+                try:
+                    with open(self._robocasa_action_log_file, 'a') as f:
+                        # 遍历当前chunk的所有时间步（horizon维度，通常16步）
+                        for t in range(horizon):
+                            # 从unnormalized_action中提取batch=0的数据
+                            left_arm = unnormalized_action["action.left_arm"][0, t, :]      # (7,) - arm joint angles
+                            left_hand = unnormalized_action["action.left_hand"][0, t, :]    # (6,) - finger joints
+                            right_arm = unnormalized_action["action.right_arm"][0, t, :]    # (7,) - arm joint angles
+                            right_hand = unnormalized_action["action.right_hand"][0, t, :]  # (6,) - finger joints
+
+                            waist = unnormalized_action["action.waist"][0, t, :]          # (3,) - waist joint angles
+                            
+                            # 拼接完整动作：[left_arm(6), left_hand(6), right_arm(6), right_hand(6)] = 24维
+                            full_action = np.concatenate([
+                                left_arm,     # L_arm_q1-q7
+                                left_hand,    # L_finger_q1~6: [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
+                                right_arm,    # R_arm_q1-q7
+                                right_hand,    # R_finger_q1~6: 
+                                waist        # waist joint angles
+                            ])
+                            
+                            # 写入一行：chunk_id t 26个数值 (7+6+7+6)
+                            line = f"{self._robocasa_action_chunk_counter} {t}"
+                            for val in full_action:
+                                line += f" {val:.6f}"
+                            line += "\n"
+                            f.write(line)
+                    
+                    self._robocasa_action_chunk_counter += 1
+                    
+                    # 每10个chunk打印一次进度
+                    if self._robocasa_action_chunk_counter % 10 == 0:
+                        print(f"[RoboCasa Action Logger] 已保存 {self._robocasa_action_chunk_counter} 个chunk数据")
+                except Exception as e:
+                    print(f"[RoboCasa Action Logger] 保存失败: {e}")
+                    import traceback
+                    traceback.print_exc()
             # ==========================================================
 
         return unnormalized_action

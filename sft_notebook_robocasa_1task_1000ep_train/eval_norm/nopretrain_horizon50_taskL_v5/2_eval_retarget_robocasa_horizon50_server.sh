@@ -11,7 +11,7 @@ export CUDA_VISIBLE_DEVICES=5
 
 # Debug模式：设置为1时会在policy中记录4个txt日志文件，用于调试
 # 设置为0或不设置时不会记录日志，适合批量测试任务
-export DEBUG_MODE=0
+export DEBUG_MODE=1
 
 python3 scripts/inference_service.py --server \
     --model_path /vla/users/lijiayi/code/groot_retarget/output_ckpt/n1.5_nopretrain_finetuneALL_on_robocasa_task1_retarget_v5_bs384_horizon50/checkpoint-33000 \
