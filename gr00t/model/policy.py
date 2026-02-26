@@ -184,11 +184,12 @@ class Gr00tPolicy(BasePolicy):
                 # -----------------------------------------------------
                 # FK 输入 finger6 顺序: [index, middle, ring, pinky, thumb_yaw, thumb_pitch]
                 # FK 输出 keypoints 顺序: [wrist, thumb, index, middle, ring, pinky] (6, 3)
-                from gr00t.eval.gr1_hand_fk import PolicyFourierHandKeypoints
+                from gr00t.eval.gr1_hand_fk import PolicyFourierHandKeypoints, convert_robocasa_hand_to_fk_input
                 self.policy_fourier_hand_keypoints = PolicyFourierHandKeypoints(
                     left_urdf=Path("gr00t/eval/robot_assets/fourier_hand/fourier_left_hand.urdf"), 
                     right_urdf=Path("gr00t/eval/robot_assets/fourier_hand/fourier_right_hand.urdf")
                 )
+                self._convert_robocasa_hand = convert_robocasa_hand_to_fk_input
                 print("✓ Initialized Fourier Hand FK for Step 1 (input processing).")
                 
                 # -----------------------------------------------------
@@ -528,12 +529,19 @@ class Gr00tPolicy(BasePolicy):
                             print(f"[Observation Logger] 写入日志失败: {e}")
                     # ==========================================================
                     
-                    # 数据集格式和FK期望格式一致，不需要重排序
-                    # Robocasa数据集: [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
-                    # FK期望:        [index, middle, ring, pinky, thumb_yaw, thumb_pitch]
-                    # 只交换最后两个维度
-                    left_hand_fk = left_hand_orig[..., [3, 2, 1, 0, 5, 4]]
-                    right_hand_fk = right_hand_orig[..., [3, 2, 1, 0, 5, 4]]
+
+                    # # 数据集格式和FK期望格式一致，不需要重排序
+                    # # Robocasa数据集: [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
+                    # # FK期望:        [index, middle, ring, pinky, thumb_yaw, thumb_pitch]
+                    # # 只交换最后两个维度
+                    # left_hand_fk = left_hand_orig[..., [3, 2, 1, 0, 5, 4]]
+                    # right_hand_fk = right_hand_orig[..., [3, 2, 1, 0, 5, 4]]
+
+                    # 与 body_retarget 对齐：先对 finger 做 sign flip + clip，再重排为 FK 顺序
+                    # Robocasa 格式: [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
+                    # pinky/ring/middle/index/thumb_yaw 取负; thumb_pitch 保持; 再 clip 到 URDF 限位
+                    left_hand_fk = self._convert_robocasa_hand(left_hand_orig)
+                    right_hand_fk = self._convert_robocasa_hand(right_hand_orig)
                                         
                     # 执行 FK 计算
                     # 输入：

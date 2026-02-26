@@ -164,6 +164,41 @@ class FourierHandFK:
         return key_points
 
 
+# 与 body_retarget_robocasa_eepose_keypoints_v5.py 完全一致的 finger 符号与 clip 规则
+HAND_ACTION_RANGES = {
+    "pinky": (-1.57, 0),
+    "ring": (-1.57, 0),
+    "middle": (-1.57, 0),
+    "index": (-1.57, 0),
+    "thumb_pitch": (0, 1.22),
+    "thumb_yaw": (-1.74, 0),
+}
+
+
+def convert_robocasa_hand_to_fk_input(hand_orig: np.ndarray) -> np.ndarray:
+    """
+    将 RoboCasa/数据集格式的手指控制量转换为 FK 所需格式（与 body_retarget 对齐）。
+    
+    输入格式 (..., 6): [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
+    输出格式 (..., 6): [index, middle, ring, pinky, thumb_yaw, thumb_pitch]
+    
+    对 pinky, ring, middle, index, thumb_yaw 取负后 clip；thumb_pitch 保持原样 clip。
+    与 body_retarget_robocasa_eepose_keypoints_v5.py 的 build_full_joint_array 一致。
+    """
+    hand = np.asarray(hand_orig, dtype=np.float64)
+    # 先 sign flip + clip（数据集顺序）
+    clipped = np.stack([
+        np.clip(-hand[..., 0], HAND_ACTION_RANGES["pinky"][0], HAND_ACTION_RANGES["pinky"][1]),
+        np.clip(-hand[..., 1], HAND_ACTION_RANGES["ring"][0], HAND_ACTION_RANGES["ring"][1]),
+        np.clip(-hand[..., 2], HAND_ACTION_RANGES["middle"][0], HAND_ACTION_RANGES["middle"][1]),
+        np.clip(-hand[..., 3], HAND_ACTION_RANGES["index"][0], HAND_ACTION_RANGES["index"][1]),
+        np.clip(hand[..., 4], HAND_ACTION_RANGES["thumb_pitch"][0], HAND_ACTION_RANGES["thumb_pitch"][1]),
+        np.clip(-hand[..., 5], HAND_ACTION_RANGES["thumb_yaw"][0], HAND_ACTION_RANGES["thumb_yaw"][1]),
+    ], axis=-1)
+    # 重排为 FK 期望顺序: [index, middle, ring, pinky, thumb_yaw, thumb_pitch]
+    return clipped[..., [3, 2, 1, 0, 5, 4]]
+
+
 class PolicyFourierHandKeypoints:
     """
     用于 policy 的 Fourier 手关键点 FK v2：
