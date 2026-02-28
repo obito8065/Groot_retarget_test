@@ -70,10 +70,9 @@ class FourierHandRetargetAPI:
     Fourier灵巧手Retarget API v2 - 严格按照原始retarget脚本实现
     
     关键特性:
-    1. ✅ 包含warmup处理（episode开始的前几帧）
-    2. ✅ 支持45维输入格式（与训练数据对齐）
-    3. ✅ 严格遵循原始retarget脚本的处理流程
-    4. ✅ 输出格式保持不变
+    1.  包含warmup处理（episode开始的前几帧）
+    2.  支持45维输入格式（与训练数据对齐）
+    3.  严格遵循原始retarget脚本的处理流程
     
     输入格式（45维）:
         - left_key_points(21): wrist_xyz(3) + 5tips_xyz(15) + wrist_rotvec(3)

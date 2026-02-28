@@ -21,4 +21,5 @@ python3 scripts/inference_service.py --server \
     --denoising_steps 20 \
     --use_eepose \
     --use_fourier_hand_retarget \
-    --action_horizon 50
+    --action_horizon 50 \
+    --seed 0

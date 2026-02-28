@@ -139,7 +139,7 @@ if __name__ == "__main__":
                 max_episode_steps=args.max_episode_steps,
                 save_substep_video=args.save_substep_video,
             ),
-            # episode_seed_start=args.episode_seed_start, # 仿真评测任务的每个episode的随机种子起始值
+            episode_seed_start=args.episode_seed_start, # 仿真评测任务的每个episode的随机种子起始值
         )
 
         # Run the simulation
