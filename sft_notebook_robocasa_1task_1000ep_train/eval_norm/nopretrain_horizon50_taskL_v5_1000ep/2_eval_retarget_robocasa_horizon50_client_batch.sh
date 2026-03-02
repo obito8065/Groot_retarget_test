@@ -3,16 +3,20 @@
 cd /vla/users/lijiayi/code/groot_retarget
 
 # conda activate robocasa
+SEED=0
+export PYTHONHASHSEED=$SEED
+export PYTHONUNBUFFERED=1
 
-export CUDA_VISIBLE_DEVICES=5
+export CUDA_VISIBLE_DEVICES=0
 python3 scripts/simulation_service.py \
         --client \
         --env_name gr1_unified/PnPWineToCabinetClose_GR1ArmsAndWaistFourierHands_Env \
-        --port 57200 \
+        --port 51200 \
         --host localhost \
-        --video_dir /vla/users/lijiayi/code/groot_retarget/output_video_record/output_retarget_1tasks_1000ep/n1.5_nopretrain_finetuneALL_on_robocasa_task1_retarget_v5_bs384_horizon50_task1/33ksteps-batch3 \
-        --n_episodes 20 \
+        --video_dir /vla/users/lijiayi/unifytip_groot/output_video_record/output_retarget_1tasks_1000ep/n1.5_nopretrain_finetuneALL_on_robocasa_retarget_v5_1000ep_bs512_horizon50_taskL/80ksteps-batch1 \
+        --n_episodes 30 \
         --n_envs 1 \
-        --max_episode_steps 720 \
-        --n_action_steps 50
+        --max_episode_steps 500 \
+        --n_action_steps 50 \
+        --episode_seed_start 0
 

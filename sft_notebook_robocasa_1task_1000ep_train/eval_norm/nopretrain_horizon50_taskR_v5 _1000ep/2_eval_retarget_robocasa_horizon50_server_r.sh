@@ -7,16 +7,19 @@ export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
 export PYOPENGL_PLATFORM=egl
 export MUJOCO_GL=egl
 
-export CUDA_VISIBLE_DEVICES=6 
+export CUDA_VISIBLE_DEVICES=1
 
-
+# Debug模式：设置为1时会在policy中记录4个txt日志文件，用于调试
+# 设置为0或不设置时不会记录日志，适合批量测试任务
+export DEBUG_MODE=1
 
 python3 scripts/inference_service.py --server \
-    --model_path /vla/users/lijiayi/code/groot_retarget/output_ckpt/n1.5_nopretrain_finetuneALL_on_robocasa_task1_retarget_v5_bs384_horizon50/checkpoint-33000 \
+    --model_path /vla/users/lijiayi/unifytip_groot/output_ckpt/n1.5_nopretrain_finetuneALL_on_robocasa_1000ep_taskR_retarget_v5_bs512_horizon50/checkpoint-46800 \
     --data_config robocasa_retarget_50_horizon \
     --embodiment_tag robocasa \
-    --port 57307 \
+    --port 57233 \
     --denoising_steps 20 \
     --use_eepose \
     --use_fourier_hand_retarget \
-    --action_horizon 50
+    --action_horizon 50 \
+    --seed 0

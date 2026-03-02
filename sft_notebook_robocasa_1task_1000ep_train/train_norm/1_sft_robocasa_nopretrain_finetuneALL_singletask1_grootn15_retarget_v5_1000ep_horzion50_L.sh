@@ -40,7 +40,7 @@ fi
 num_epochs=100
 SAVE_STEPS=2000
 
-OUTPUT_DIR=/vla/users/lijiayi/unifytip_groot/output_ckpt/n1.5_nopretrain_finetuneALL_on_robocasa_300ep_taskL_retarget_v5_bs512_horizon50
+OUTPUT_DIR=/vla/users/lijiayi/unifytip_groot/output_ckpt/n1.5_nopretrain_finetuneALL_on_robocasa_300ep_taskL_retarget_v5_bs512_horizon50_lr1e5
 
 if [ ! -d "$OUTPUT_DIR" ]; then
   mkdir -p "$OUTPUT_DIR"
@@ -70,5 +70,5 @@ python scripts/gr00t_finetune.py \
 --tune_visual \
 --embodiment_tag "${embodiment_tag_list[@]}" \
 --update_action_head \
---learning_rate 1e-4\
+--learning_rate 1e-5\
 

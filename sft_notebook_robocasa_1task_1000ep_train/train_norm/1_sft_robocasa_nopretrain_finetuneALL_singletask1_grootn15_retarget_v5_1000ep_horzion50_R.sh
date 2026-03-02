@@ -26,8 +26,8 @@ if [ "$DEBUG" = "true" ]; then
 else
     echo "Normal mode"
     # 每个节点使用的GPU（根据节点实际GPU数量调整）
-    export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-    NUM_GPUS_PER_NODE=8  # 每个节点的GPU数量
+    export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5
+    NUM_GPUS_PER_NODE=6  # 每个节点的GPU数量
     NUM_GPUS=$NUM_GPUS_PER_NODE  # 补充定义：单节点的GPU数（用于条件判断）
     TOTAL_GPUS=$((NUM_NODES * NUM_GPUS_PER_NODE))  # 总GPU数量（多节点）
     # GPU: 87046MiB/97871MiB, 754/16382 [24:10<7:15:08,  1.67s/it]
@@ -40,7 +40,7 @@ fi
 num_epochs=100
 SAVE_STEPS=2000
 
-OUTPUT_DIR=/vla/users/lijiayi/unifytip_groot/output_ckpt/n1.5_nopretrain_finetuneALL_on_robocasa_300ep_taskR_retarget_v5_bs512_horizon50
+OUTPUT_DIR=/vla/users/lijiayi/unifytip_groot/output_ckpt/n1.5_nopretrain_finetuneALL_on_robocasa_1000ep_taskR_retarget_v5_bs384_horizon50_lr1e5
 
 if [ ! -d "$OUTPUT_DIR" ]; then
   mkdir -p "$OUTPUT_DIR"
@@ -70,5 +70,6 @@ python scripts/gr00t_finetune.py \
 --tune_visual \
 --embodiment_tag "${embodiment_tag_list[@]}" \
 --update_action_head \
---learning_rate 1e-4 \
+--learning_rate 1e-5 \
+
 
