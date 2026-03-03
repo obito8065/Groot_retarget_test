@@ -1,0 +1,14 @@
+retargeting:
+  type: position
+  urdf_path: g1_gripper/G1_gripper_left.urdf
+
+  # target_joint_names: [ 'idx41_gripper_outer_joint1' ]
+  # target_link_names: [ "gripper_outer_link1", "gripper_inner_link1", "gripper_base_link"]
+
+  target_joint_names: [ 'idx41_gripper_outer_joint1' ]
+  target_link_names: [ "gripper_inner_link4", "gripper_outer_link4", "gripper_base_link"]
+
+  target_link_human_indices: [ 4, 8, 0 ] # 
+  add_dummy_free_joint: True
+  low_pass_alpha: 1
+  ignore_mimic_joint: False

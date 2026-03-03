@@ -152,7 +152,7 @@ class Gr00tPolicy(BasePolicy):
         if self.use_eepose:
             
             if "robocasa" in self.embodiment_tag.value:
-                from gr00t.eval.gr1_pos_transform import BodyRetargeter, GR1RetargetConfig
+                from gr00t.eval.gr1_eepose_ik import BodyRetargeter, GR1RetargetConfig
                 gr1_config = GR1RetargetConfig()
                 
                 # 然后，通过这个实例来访问属性

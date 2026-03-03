@@ -1,0 +1,278 @@
+<?xml version="1.0" ?>
+<robot name="G1_gripper_right">
+  <!-- Material Definition -->
+  <material name="black">
+    <color rgba="0.0 0.0 0.0 1.0"/>
+  </material>
+  <material name="blue">
+    <color rgba="0.0 0.0 0.8 1.0"/>
+  </material>
+  <material name="green">
+    <color rgba="0.0 1.0 0.0 1.0"/>
+  </material>
+  <material name="grey">
+    <color rgba="0.2 0.2 0.2 1.0"/>
+  </material>
+  <material name="orange">
+    <color rgba="1.0 0.4235294117647059 0.0392156862745098 1.0"/>
+  </material>
+  <material name="brown">
+    <color rgba="0.8705882352941177 0.8117647058823529 0.7647058823529411 1.0"/>
+  </material>
+  <material name="red">
+    <color rgba="0.8 0.0 0.0 1.0"/>
+  </material>
+  <material name="white">
+    <color rgba="1.0 1.0 1.0 1.0"/>
+  </material>
+  <material name="transparent">
+    <color rgba="1.0 1.0 1.0 0.999"/>
+  </material>
+  <material name="default">
+    <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 1"/>
+  </material>
+
+  <!-- Gripper L Base Link (Root) -->
+  <link name="gripper_base_link">
+    <inertial>
+      <origin rpy="0 0 0" xyz="-0.00013356 1.5301E-05 0.03322"/>
+      <mass value="0.23588"/>
+      <inertia ixx="8.1548E-05" ixy="-1.2617E-08" ixz="-2.05E-07" iyy="5.6921E-05" iyz="6.6903E-08" izz="7.1611E-05"/>
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/omnipicker/gripper_base_link.dae"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/omnipicker/gripper_base_link.dae"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <link name="gripper_inner_link1">
+    <inertial>
+      <origin rpy="0 0 0" xyz="0.0094685 0.0068806 6.5437E-05"/>
+      <mass value="0.025428"/>
+      <inertia ixx="1.9574E-06" ixy="-4.2911E-07" ixz="-3.7111E-11" iyy="2.3919E-06" iyz="-3.008E-10" izz="1.5501E-06"/>
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/omnipicker/inner_link1.dae"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/omnipicker/inner_link1.dae"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="idx31_gripper_inner_joint1" type="revolute">
+    <origin rpy="0.14649265358979324 -1.5707963267948966 -0.15964" xyz="0 -0.0195 0.0565"/>
+    <parent link="gripper_base_link"/>
+    <child link="gripper_inner_link1"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="10" lower="-0.7853981633974483" upper="0" velocity="10"/>
+    <mimic joint="idx41_gripper_outer_joint1" multiplier="-1" offset="0"/>
+  </joint>
+
+  <link name="gripper_inner_link3">
+    <inertial>
+      <origin rpy="0 0 0" xyz="0.0088027 -0.007035 1.6424E-05"/>
+      <mass value="0.0040132"/>
+      <inertia ixx="1.0307E-07" ixy="5.7851E-08" ixz="9.5801E-11" iyy="1.1385E-07" iyz="-2.81E-11" izz="1.7009E-07"/>
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/omnipicker/inner_link3.dae"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/omnipicker/inner_link3.dae"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="idx32_gripper_inner_joint3" type="fixed">
+    <origin rpy="3.141592653589793 0 0" xyz="0.030852 -0.018551 0"/>
+    <parent link="gripper_inner_link1"/>
+    <child link="gripper_inner_link3"/>
+  </joint>
+
+  <link name="gripper_inner_link4">
+    <inertial>
+      <origin rpy="0 0 0" xyz="0.012508 -0.0079729 9.4339E-05"/>
+      <mass value="0.018029"/>
+      <inertia ixx="1.1403E-06" ixy="5.5159E-07" ixz="-4.0096E-13" iyy="2.5704E-06" iyz="1.0951E-12" izz="2.3252E-06"/>
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/omnipicker/inner_link4.dae"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/omnipicker/inner_link4.dae"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="idx33_gripper_inner_joint4" type="fixed">
+    <origin rpy="0 0 0" xyz="0.018118 -0.01574 0"/>
+    <parent link="gripper_inner_link3"/>
+    <child link="gripper_inner_link4"/>
+  </joint>
+
+  <link name="gripper_inner_link2">
+    <inertial>
+      <origin rpy="0 0 0" xyz="0.014869 -0.0036066 0.00029307"/>
+      <mass value="0.022591"/>
+      <inertia ixx="4.3916E-06" ixy="1.114E-07" ixz="-4.9655E-12" iyy="4.737E-06" iyz="1.7121E-11" izz="6.0445E-07"/>
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/omnipicker/inner_link2.dae"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/omnipicker/inner_link2.dae"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="idx39_gripper_inner_joint2" type="fixed">
+    <origin rpy="-2.9951 -1.5707963267948966 -0.15964" xyz="0 -0.021633 0.07387"/>
+    <parent link="gripper_base_link"/>
+    <child link="gripper_inner_link2"/>
+  </joint>
+
+  <link name="gripper_outer_link1">
+    <inertial>
+      <origin rpy="0 0 0" xyz="0.0095051 -0.0068479 6.8268E-05"/>
+      <mass value="0.025428"/>
+      <inertia ixx="1.9565E-06" ixy="4.2798E-07" ixz="2.3844E-10" iyy="2.3928E-06" iyz="-1.4454E-10" izz="1.5501E-06"/>
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/omnipicker/outer_link1.dae"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/omnipicker/outer_link1.dae"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="idx41_gripper_outer_joint1" type="revolute">
+    <origin rpy="0.14649265358979324 -1.5707963267948966 -0.15964" xyz="0 0.0195 0.0565"/>
+    <parent link="gripper_base_link"/>
+    <child link="gripper_outer_link1"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="10" lower="0" upper="0.7853981633974483" velocity="10"/>
+  </joint>
+
+  <link name="gripper_outer_link3">
+    <inertial>
+      <origin rpy="0 0 0" xyz="0.0088027 0.007035 -1.6424E-05"/>
+      <mass value="0.0040132"/>
+      <inertia ixx="1.0307E-07" ixy="-5.7851E-08" ixz="-9.58E-11" iyy="1.1385E-07" iyz="-2.81E-11" izz="1.7009E-07"/>
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/omnipicker/outer_link3.dae"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/omnipicker/outer_link3.dae"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="idx42_gripper_outer_joint3" type="fixed">
+    <origin rpy="3.141592653589793 0 0" xyz="0.030852 0.018551 0"/>
+    <parent link="gripper_outer_link1"/>
+    <child link="gripper_outer_link3"/>
+  </joint>
+
+  <link name="gripper_outer_link4">
+    <inertial>
+      <origin rpy="0 0 0" xyz="0.016206 0.0094593 4.7668E-05"/>
+      <mass value="0.035835"/>
+      <inertia ixx="8.5056E-06" ixy="-1.1363E-06" ixz="-4.2908E-11" iyy="1.1235E-05" iyz="-2.9251E-11" izz="4.6309E-06"/>
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/omnipicker/outer_link4.dae"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/omnipicker/outer_link4.dae"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="idx43_gripper_outer_joint4" type="fixed">
+    <origin rpy="0 0 0" xyz="0.018118 0.01574 0"/>
+    <parent link="gripper_outer_link3"/>
+    <child link="gripper_outer_link4"/>
+  </joint>
+
+  <link name="gripper_outer_link2">
+    <inertial>
+      <origin rpy="0 0 0" xyz="0.016268 0.0040555 0.00030323"/>
+      <mass value="0.025142"/>
+      <inertia ixx="5.887E-06" ixy="-1.1234E-07" ixz="2.1954E-11" iyy="6.236E-06" iyz="-9.473E-12" izz="6.2389E-07"/>
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/omnipicker/outer_link2.dae"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="meshes/omnipicker/outer_link2.dae"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="idx49_gripper_outer_joint2" type="fixed">
+    <origin rpy="-2.9951 -1.5707963267948966 -0.15964" xyz="0 0.021633 0.07387"/>
+    <parent link="gripper_base_link"/>
+    <child link="gripper_outer_link2"/>
+  </joint>
+
+  <link name="gripper_center_link"/>
+
+  <joint name="idx52_gripper_center_joint" type="fixed">
+    <origin rpy="0 0 -1.5707963267948966" xyz="0.0 0.0 0.14308"/>
+    <parent link="gripper_base_link"/>
+    <child link="gripper_center_link"/>
+  </joint>
+
+
+</robot>

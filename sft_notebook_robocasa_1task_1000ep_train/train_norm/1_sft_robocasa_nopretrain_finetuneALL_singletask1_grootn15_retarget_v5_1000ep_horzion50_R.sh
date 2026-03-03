@@ -34,7 +34,7 @@ else
     BATCH_SIZE=64  # 每个GPU的batch size
     WORKERS=8
 fi
-
+5n
 
 
 num_epochs=100

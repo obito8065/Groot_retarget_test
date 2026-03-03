@@ -9,16 +9,17 @@ export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
 export PYOPENGL_PLATFORM=egl
 export MUJOCO_GL=egl
 
-export CUDA_VISIBLE_DEVICES=5
+export CUDA_VISIBLE_DEVICES=6
 python3 scripts/simulation_service.py \
         --client \
         --env_name gr1_unified/PnPWineToCabinetClose_GR1ArmsAndWaistFourierHands_Env \
         --port 57210 \
         --host localhost \
-        --video_dir /vla/users/lijiayi/unifytip_groot/output_video_record/output_retarget_1tasks_1000ep/n1.5_nopretrain_finetuneALL_on_robocasa_retarget_v5_1000ep_bs512_horizon50_taskL/90ksteps-modify0 \
+        --video_dir /vla/users/lijiayi/unifytip_groot/output_video_record/output_retarget_1tasks_300ep/n1.5_nopretrain_finetuneALL_on_robocasa_retarget_v5_bs384_horizon50_taskL/33ksteps-modify10 \
         --n_episodes 1 \
         --n_envs 1 \
-        --max_episode_steps 450 \
+        --max_episode_steps 600 \
         --save_substep_video \
-        --n_action_steps 50
+        --n_action_steps 50 \
+        --episode_seed_start 4
 

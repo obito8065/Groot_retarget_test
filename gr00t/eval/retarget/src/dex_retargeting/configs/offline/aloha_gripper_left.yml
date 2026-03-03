@@ -1,0 +1,16 @@
+retargeting:
+  type: position
+  urdf_path: aloha-agilex/aloha_left_gripper_glb.urdf
+
+  # ALOHA 左夹爪的主动关节：选一边 finger 的 prismatic 关节
+  target_joint_names: [ 'f_joint7' , 'f_joint8' ]
+
+  # 两个指尖 + 基座，对应 G1 的 gripper_inner_link4 / outer_link4 / base_link
+  target_link_names: [ 'f_link7', 'f_link8', 'f_link6' ]
+
+  # 人手上的三个约束点索引，先沿用 G1 的 [4, 8, 0]
+  target_link_human_indices: [ 4, 8, 0 ]
+
+  add_dummy_free_joint: True
+  low_pass_alpha: 1
+  ignore_mimic_joint: False

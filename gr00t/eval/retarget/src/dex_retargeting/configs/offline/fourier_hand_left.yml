@@ -1,0 +1,17 @@
+retargeting:
+  type: position
+  urdf_path: fourier_hand/fourier_left_hand.urdf
+
+  target_joint_names: [ 'L_pinky_proximal_joint', 'L_ring_proximal_joint', 'L_middle_proximal_joint', 'L_index_proximal_joint',
+                        'L_thumb_proximal_pitch_joint', 'L_thumb_proximal_yaw_joint' ]
+  target_link_names: [ "L_thumb_tip_link",  "L_index_tip_link", "L_middle_tip_link", "L_ring_tip_link", "L_pinky_tip_link", "L_hand_base_link" ]
+
+  target_link_human_indices: [ 4, 8, 12, 16, 20, 0 ]
+  add_dummy_free_joint: True
+
+  # A smaller alpha means stronger filtering, i.e. more smooth but also larger latency
+  # 1 means no filter while 0 means not moving
+  low_pass_alpha: 1
+
+  # To ignore the mimic joint tags in the URDF, set it to True
+  ignore_mimic_joint: False
