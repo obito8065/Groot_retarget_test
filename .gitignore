@@ -150,3 +150,7 @@ playground/
 demo_data/gr00t-gr1-apple-to-shelf/
 tmp/
 output/
+
+
+# assets
+gr00t/eval/retarget/assets/robots/hands/aloha-agilex/
