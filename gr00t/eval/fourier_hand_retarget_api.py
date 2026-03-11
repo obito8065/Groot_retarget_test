@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Fourier Hand Retarget API v2 - 严格按照原始retarget脚本实现
+Fourier Hand Retarget API - 严格按照原始retarget脚本实现，重新封装
 包含warmup和完整的retarget流程
 
 输入格式（45维）:
@@ -39,36 +39,86 @@ import os
 import tempfile
 import numpy as np
 from pathlib import Path
-from typing import Dict, Optional, List
+from typing import Dict, List, Optional, Tuple
 from scipy.spatial.transform import Rotation as R
+from dataclasses import dataclass
+import logging
 
-# 设置 SAPIEN 环境变量（headless模式）
-os.environ["PYOPENGL_PLATFORM"] = "egl"
+# 仅在首次创建 SAPIEN scene 时调用；若未设置则设置为 egl（headless 模式）
+def _ensure_sapien_environment():
+    if "PYOPENGL_PLATFORM" not in os.environ:
+        os.environ["PYOPENGL_PLATFORM"] = "egl"
 
-# 添加retarget路径（指向robot_retarget_for_anything）
-retarget_src_path = Path("/vla/users/lijiayi/code/robot_retarget_for_anything/retarget/src")
-if retarget_src_path.exists():
-    sys.path.insert(0, str(retarget_src_path))
+# 添加 retarget 路径（使用直接下载到本地的包）
+_RETARGET_SRC_PATH = Path(__file__).resolve().parent / "retarget" / "src"
+if _RETARGET_SRC_PATH.exists():
+    if str(_RETARGET_SRC_PATH) not in sys.path:
+        sys.path.insert(0, str(_RETARGET_SRC_PATH))
 else:
-    # 备用路径
-    retarget_src_path = Path(__file__).parent.parent.parent.parent / "retarget" / "src"
-    sys.path.insert(0, str(retarget_src_path))
+    raise ImportError(
+        f"dex_retargeting not found at {_RETARGET_SRC_PATH}. "
+        "Ensure gr00t/eval/retarget/ is properly set up."
+    )
+
 
 # 导入核心retargeting组件
-from dex_retargeting.constants import HandType, RetargetingType, RobotName, get_default_config_path
+from dex_retargeting.constants import (
+    HandType, 
+    RetargetingType, 
+    RobotName, 
+    get_default_config_path )
 from dex_retargeting.retargeting_config import RetargetingConfig
 from dex_retargeting.seq_retarget import SeqRetargeting
 from dex_retargeting import yourdfpy as urdf
 from pytransform3d import rotations
 
-# 导入 SAPIEN（用于创建 robot 和计算 FK）
-import sapien
+logger = logging.getLogger(__name__)
+
+# 定义所有的常量：
+INPUT_DIM = 45
+KEYPOINTS_PER_HAND = 21
+KEYPOINTS_6DIM = 6  # wrist + 5 tips
+OUTPUT_WRIST_POSE_DIM = 6
+OUTPUT_FINGER_JOINTS_DIM = 6
+
+# 45维输入中左右手的偏移
+STATE_OFFSETS: Dict[str, int] = {"left": 0, "right": 21}
+
+# MANO 21点索引：[thumb_tip, index_tip, middle_tip, ring_tip, pinky_tip, wrist]
+MANO_KEYPOINT_INDICES = np.array([4, 8, 12, 16, 20, 0])
+
+# 21维关键点内顺序: [wrist, thumb, index, middle, ring, pinky] -> [thumb..wrist] 的 MANO 顺序
+KEYPOINT_REORDER = np.array([1, 2, 3, 4, 5, 0])
+
+# 手指关节符号修正系数 [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
+# pinky, ring, middle, index, thumb_yaw 取负并缩放，thumb_pitch 保持不变
+# FINGER_JOINT_CORRECTION_SCALE = np.array(
+#     [-1.64, -1.64, -1.64, -1.64, 1.0, -1.0],
+#     dtype=np.float32,
+# )
+
+FINGER_JOINT_CORRECTION_SCALE = np.array(
+    [-1.0, -1.0, -1.0, -1.0, 1.0, -1.0],
+    dtype=np.float32,
+)
+
+# 轴角连续性检测中的阈值，抽成常量便于调参
+AXISANGLE_JUMP_THRESHOLD = 2.0
+AXISANGLE_RATIO_THRESHOLD = 0.5
+AXISANGLE_EPS = 1e-6
+
+# 结构化定义retarget输出
+@dataclass
+class RetargetOutput:
+    wrist_pose: np.ndarray  # (6,) [pos_xyz(3), rotvec_xyz(3)]
+    finger_joints: np.ndarray  # (6,) [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
+
 
 
 class FourierHandRetargetAPI:
     """
-    Fourier灵巧手Retarget API v2 - 严格按照原始retarget脚本实现
-    
+    Fourier灵巧手Retarget API 
+
     关键特性:
     1.  包含warmup处理（episode开始的前几帧）
     2.  支持45维输入格式（与训练数据对齐）
@@ -90,144 +140,178 @@ class FourierHandRetargetAPI:
         
     注意: 
         - finger_joints顺序为6个主动关节: [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
-        - 已进行符号修正：pinky, ring, middle, index, thumb_yaw 取负号，thumb_pitch 保持不变
+        - robocasa需要进行符号修正：pinky, ring, middle, index, thumb_yaw 取负号，thumb_pitch 保持不变
         - 可直接用于MuJoCo仿真控制
     """
+
+    _FINGER_JOINT_NAMES = {
+        "left": [
+            "L_pinky_proximal_joint",
+            "L_ring_proximal_joint",
+            "L_middle_proximal_joint",
+            "L_index_proximal_joint",
+            "L_thumb_proximal_pitch_joint",
+            "L_thumb_proximal_yaw_joint",
+        ],
+        "right": [
+            "R_pinky_proximal_joint",
+            "R_ring_proximal_joint",
+            "R_middle_proximal_joint",
+            "R_index_proximal_joint",
+            "R_thumb_proximal_pitch_joint",
+            "R_thumb_proximal_yaw_joint",
+        ],
+    }
     
     def __init__(
         self, 
         robot_name: str = "fourier",
-        hand_sides: List[str] = ["left", "right"],
+        hand_sides: Optional[List[str]] = None,
         wrist_enhance_weight: float = 2.0,
-        warm_up_steps: int = 5,
+        warm_up_steps: int = 1,
+        finger_correction_scale: Optional[np.ndarray] = None,
     ):
         """
-        初始化Retarget API v2
+        初始化Retarget API
         
         Args:
             robot_name: 机器人名称，默认"fourier"
             hand_sides: 手部列表，默认["left", "right"]
             wrist_enhance_weight: 手腕优化权重，默认2.0
             warm_up_steps: warmup的帧数，默认1（即第一帧进行warmup）
+            finger_correction_scale: 手指关节符号修正系数 (6,)，None 则用默认值
         """
         # 转换robot_name为RobotName enum
-        if hasattr(RobotName, robot_name):
-            self.robot_name_enum = getattr(RobotName, robot_name)
-        else:
-            raise ValueError(f"Unknown robot: {robot_name}")
-        
+        hand_sides = hand_sides or ["left", "right"]
+        self.robot_name_enum = self._get_robot_name_enum(robot_name)
+
         self.hand_sides = hand_sides
         self.warm_up_steps = warm_up_steps
-        self.retargetings = {}
-        self.retarget2target = {}  # 已废弃，保留以兼容
-        self.desired_joint_indices = {}  # 存储desired finger joints的索引
-        
-        # 用于跟踪episode状态
-        self._episode_frame_count = {side: 0 for side in hand_sides}
-        self._is_warmed_up = {side: False for side in hand_sides}
-        
-        # 用于轴角连续性处理：存储上一帧的四元数和轴角
-        self._last_quaternion = {side: None for side in hand_sides}
-        self._last_rotvec = {side: None for side in hand_sides}
-        
-        # 注意：不再需要URDF到MuJoCo的映射配置
-        # 现在直接使用符号修正：对 [pinky, ring, middle, index, thumb_yaw] 取负号，thumb_pitch 保持不变
+
+        self.finger_correction_scale = (
+            finger_correction_scale if finger_correction_scale is not None else FINGER_JOINT_CORRECTION_SCALE.copy()
+        )
+        self.retargetings: Dict[str, object] = {}
+        self.desired_joint_indices: Dict[str, np.ndarray] = {}
+        self.sapien_robots: Dict[str, object] = {}
+        self.hand_base_link_indices: Dict[str, int] = {}
+
+        self._episode_frame_count: Dict[str, int] = {s: 0 for s in hand_sides}
+        self._is_warmed_up: Dict[str, bool] = {s: False for s in hand_sides}
+        self._last_quaternion: Dict[str, Optional[np.ndarray]] = {s: None for s in hand_sides}
+        self._last_rotvec: Dict[str, Optional[np.ndarray]] = {s: None for s in hand_sides}
+
+        _ensure_sapien_environment()
+        import sapien
         
         # 创建 SAPIEN scene 和 robots（用于 FK 计算，与 hand_robot_viewer_fourier.py 保持一致）
         self.scene = sapien.Scene()
-        self.sapien_robots = {}  # 存储每个 side 的 SAPIEN robot 对象
-        self.hand_base_link_indices = {}  # 存储 hand_base_link 的索引（通常是7）
+
         
         # 为每个手侧初始化retargeting
         for side in hand_sides:
-            hand_type = getattr(HandType, side)
+            self._init_hand_side(side, wrist_enhance_weight, robot_name)
             
-            # 加载配置
-            config_path = get_default_config_path(
-                self.robot_name_enum, 
-                RetargetingType.position, 
-                hand_type
-            )
-            config = RetargetingConfig.load_from_file(config_path)
-            
-            # 使用config的build方法创建retargeting实例
-            retargeting = config.build()
-            
-            # 设置优化权重（与原始脚本一致）
-            retargeting.optimizer.set_retarget_weight(wrist_enhance_weight=wrist_enhance_weight)
-            
-            # 定义6个主动finger joints（不包括dummy joints和mimic joints）
-            # 这些是仿真需要的控制量，顺序: [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
-            prefix = 'L_' if side == 'left' else 'R_'
-            desired_finger_joint_names = [
-                f'{prefix}pinky_proximal_joint',
-                f'{prefix}ring_proximal_joint',
-                f'{prefix}middle_proximal_joint',
-                f'{prefix}index_proximal_joint',
-                f'{prefix}thumb_proximal_pitch_joint',
-                f'{prefix}thumb_proximal_yaw_joint',
-            ]
-            
-            # 计算这6个finger joints在retargeting.joint_names中的索引
-            desired_joint_indices = []
-            for joint_name in desired_finger_joint_names:
-                try:
-                    idx = retargeting.joint_names.index(joint_name)
-                    desired_joint_indices.append(idx)
-                except ValueError:
-                    # 如果找不到，打印错误
-                    print(f"Error: Cannot find joint {joint_name} in retargeting.joint_names")
-                    print(f"  Available joints: {retargeting.joint_names}")
-                    raise
-            
-            self.retargetings[side] = retargeting
-            self.retarget2target[side] = None  # 不再需要这个映射
-            self.desired_joint_indices[side] = np.array(desired_joint_indices, dtype=int)
-            
-            # 创建 SAPIEN robot（与 hand_robot_viewer_fourier.py 保持一致）
-            loader = self.scene.create_urdf_loader()
-            loader.fix_root_link = True
-            loader.load_multiple_collisions_from_file = True
-            
-            urdf_path = Path(config.urdf_path)
-            if "glb" not in urdf_path.stem:
-                urdf_path = urdf_path.with_stem(urdf_path.stem + "_glb")
-            robot_urdf = urdf.URDF.load(str(urdf_path), add_dummy_free_joints=True, build_scene_graph=False)
-            urdf_name = urdf_path.name
-            temp_dir = tempfile.mkdtemp(prefix="dex_retargeting-")
-            temp_path = f"{temp_dir}/{urdf_name}"
-            robot_urdf.write_xml_file(temp_path)
-            
-            sapien_robot = loader.load(temp_path)
-            sapien_robot.set_name(f"{self.robot_name_enum.name}_{side}")
-            self.sapien_robots[side] = sapien_robot
-            
-            # 获取 hand_base_link 的索引（通常是7，与 hand_robot_viewer_fourier.py 一致）
-            # 查找 hand_base_link 在 links 中的索引
-            links = sapien_robot.get_links()
-            hand_base_link_idx = None
+    def _get_robot_name_enum(self, robot_name: str) -> RobotName:
+        """转换robot_name为RobotName enum"""
+        if hasattr(RobotName, robot_name):
+            return getattr(RobotName, robot_name)
+        else:
+            raise ValueError(f"Unknown robot: {robot_name}")
+    
+    def _init_hand_side(self, side: str, wrist_enhance_weight: float, robot_name: str):
+        """初始化单个手侧"""
+        hand_type = getattr(HandType, side)
+        config_path = get_default_config_path(
+            self.robot_name_enum, 
+            RetargetingType.position, 
+            hand_type
+        )
+        config = RetargetingConfig.load_from_file(config_path)
+        retargeting = config.build()
+        retargeting.optimizer.set_retarget_weight(wrist_enhance_weight=wrist_enhance_weight)
+        
+        joint_names = self._FINGER_JOINT_NAMES[side]
+        desired_indices = []
+        for joint_name in joint_names:
+            try:
+                idx = retargeting.joint_names.index(joint_name)
+                desired_indices.append(idx)
+            except ValueError:
+                print(f"Error: Cannot find joint {joint_name} in retargeting.joint_names")
+                print(f"  Available joints: {retargeting.joint_names}")
+                raise
+        self.retargetings[side] = retargeting
+        self.desired_joint_indices[side] = np.array(desired_indices, dtype=int)
+
+        sapien_robot = self._create_sapien_robot(config, retargeting, side)
+        self.sapien_robots[side] = sapien_robot
+        self.hand_base_link_indices[side] = self._find_hand_base_link_index(sapien_robot)
+
+
+    def _create_sapien_robot(self, config: object, retargeting: object, side: str): 
+        """创建 SAPIEN robot"""
+        loader = self.scene.create_urdf_loader()
+        loader.fix_root_link = True
+        loader.load_multiple_collisions_from_file = True
+        
+        urdf_path = Path(config.urdf_path)
+        if "glb" not in urdf_path.stem:
+            urdf_path = urdf_path.with_stem(urdf_path.stem + "_glb")
+        robot_urdf = urdf.URDF.load(str(urdf_path), add_dummy_free_joints=True, build_scene_graph=False)
+        urdf_name = urdf_path.name
+        temp_dir = tempfile.mkdtemp(prefix="dex_retargeting-")
+        temp_path = f"{temp_dir}/{urdf_name}"
+        robot_urdf.write_xml_file(temp_path)
+        sapien_robot = loader.load(temp_path)
+        sapien_robot.set_name(f"{self.robot_name_enum.name}_{side}")
+        return sapien_robot
+
+    def _find_hand_base_link_index(self, sapien_robot: object):
+        """
+        查找 hand_base_link 的索引，通常是7（与 origin 对齐）
+        优先匹配 hand_base，避免误匹配 base_link 等包含 'base' 的其他 link
+        """
+        links = sapien_robot.get_links()
+        hand_base_link_idx = None
+        # 优先匹配 hand_base（更精确），避免 base_link 在 hand_base_link 之前时误匹配
+        for i, link in enumerate(links):
+            if 'hand_base' in link.name.lower():
+                hand_base_link_idx = i
+                break
+        if hand_base_link_idx is None:
             for i, link in enumerate(links):
-                if 'hand_base' in link.name.lower() or 'base' in link.name.lower():
+                if 'base' in link.name.lower():
                     hand_base_link_idx = i
                     break
-            if hand_base_link_idx is None:
-                # 如果找不到，使用索引7（与注释一致）
-                hand_base_link_idx = 7
-                print(f"Warning: Cannot find hand_base_link by name, using index {hand_base_link_idx}")
-            self.hand_base_link_indices[side] = hand_base_link_idx
-            
-            # 调试信息
-            print(f"\n[{side.upper()} hand]")
-            print(f"  Desired 6 finger joints: {desired_finger_joint_names}")
-            print(f"  Indices in qpos: {self.desired_joint_indices[side]}")
-            print(f"  Total joints in qpos: {len(retargeting.joint_names)}")
-            print(f"  Hand base link index: {hand_base_link_idx} (link name: {links[hand_base_link_idx].name})")
-        
-        print(f"[FourierHandRetargetAPI] Initialized successfully")
-        print(f"  Robot: {robot_name}, Sides: {hand_sides}")
-        print(f"  Wrist enhance weight: {wrist_enhance_weight}")
-        print(f"  Warmup steps: {warm_up_steps}")
+        if hand_base_link_idx is None:
+            hand_base_link_idx = 7
+            print(f"Warning: Cannot find hand_base_link by name, using index {hand_base_link_idx}")
+        return hand_base_link_idx
+
+
+    def _validate_input(self, state_45d: np.ndarray) -> np.ndarray:
+        """ 验证输入是否为45维 """
+        state = np.asarray(state_45d, dtype=np.float32)
+        if state.size != INPUT_DIM:
+            raise ValueError(
+                f"Expected input dimension {INPUT_DIM}, got {state.size}. "
+                "Use state_45d.flatten() if needed."
+            )
+        return state.flatten()
     
+    def _extract_keypoints_from_45d(
+        self, state_45d: np.ndarray, side: str
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """从 45 维提取单手数据的逻辑独立，用常量 STATE_OFFSETS 替代硬编码 0/21。"""
+        offset = STATE_OFFSETS[side]
+        kp = state_45d[offset : offset + KEYPOINTS_PER_HAND]
+        wrist_xyz = kp[0:3]
+        tips = kp[3:18].reshape(5, 3)  # thumb, index, middle, ring, pinky
+        wrist_rotvec = kp[18:21]
+        keypoints_6x3 = np.vstack([wrist_xyz, tips]).astype(np.float32)
+        return keypoints_6x3, wrist_rotvec
+
     def _ensure_axisangle_continuity(self, current_rotvec: np.ndarray, side: str) -> np.ndarray:
         """
         确保轴角表示的连续性，避免等价表示之间的跳变。
@@ -272,10 +356,10 @@ class FourierHandRetargetAPI:
         actual_angle = np.linalg.norm(R.from_matrix(R_diff).as_rotvec())
         
         # 如果直接差值很大但实际旋转角度很小，说明是等价表示跳变
-        if direct_diff > 2.0 and actual_angle < direct_diff * 0.5:
+        if direct_diff > AXISANGLE_JUMP_THRESHOLD  and actual_angle < direct_diff * AXISANGLE_RATIO_THRESHOLD:
             # 尝试 -r + 2πk 的等价表示
             angle = np.linalg.norm(current_rotvec)
-            if angle > 1e-6:
+            if angle > AXISANGLE_EPS:
                 axis = current_rotvec / angle
                 # 尝试 -r + 2πk 表示
                 alternative_angle = 2 * np.pi - angle
@@ -319,23 +403,27 @@ class FourierHandRetargetAPI:
             self._last_quaternion[side] = None  # 重置四元数历史
             self._last_rotvec[side] = None  # 重置轴角历史
         
-        # 如果未来需要缓存last_qpos，在此根据env_idx清理
-        # if env_idx is not None:
-        #     清理指定环境的缓存
-        # else:
-        #     清理所有环境的缓存
         
         print(f"[FourierHandRetargetAPI] Reset for new episode (env_idx={env_idx})")
     
+    def _maybe_warmup(
+        self, keypoints_6x3: np.ndarray, wrist_rotvec: np.ndarray, side: str
+    ) -> None:
+        """warmup 条件判断独立成方法，retarget_from_45d 主流程更清晰。"""
+        if self._episode_frame_count[side] >= self.warm_up_steps:
+            return
+        wrist_xyz = keypoints_6x3[0]
+        quat_xyzw = R.from_rotvec(wrist_rotvec).as_quat()
+        wrist_quat_wxyz = np.array([quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]]) # scipy返回的是[x,y,z,w]，需要转换为[w,x,y,z]
+        self._warmup(wrist_xyz, wrist_quat_wxyz, side)
+
     def _warmup(self, wrist_pos: np.ndarray, wrist_quat: np.ndarray, side: str):
         """
-        执行warmup（与原始脚本的multi_robot_warmup一致）
-        
+        执行warmup
         Args:
             wrist_pos: 手腕位置 (3,)
             wrist_quat: 手腕四元数旋转 (4,) [w, x, y, z]
             side: 'left' 或 'right'
-        
         注意:
             - 这对应于原始脚本的 multi_robot_warmup() 和 warm_start()
             - warmup使用手腕的wrist position作为joint输入
@@ -349,16 +437,56 @@ class FourierHandRetargetAPI:
             wrist_pos=wrist_pos,         # 手腕3D位置
             wrist_quat=wrist_quat,       # 手腕四元数旋转 [w, x, y, z]
             hand_type=hand_type,         # 左手或右手
-            # is_mano_convention=True,     # 使用MANO坐标系约定
             is_mano_convention=False,     # 不使用MANO坐标系约定，默认相机坐标系
         )
         
         self._is_warmed_up[side] = True
         return warmup_qpos6d
+
+    def _build_mano_hand_21(self, keypoints_6x3: np.ndarray) -> np.ndarray:
+        """MANO 格式转换用常量 KEYPOINT_REORDER、MANO_KEYPOINT_INDICES，避免魔法索引。"""
+        kp_reordered = keypoints_6x3[KEYPOINT_REORDER]
+        hand_21 = np.zeros((21, 3), dtype=np.float32)
+        hand_21[MANO_KEYPOINT_INDICES] = kp_reordered
+        return hand_21
+
+    def _run_retarget(self, hand_21: np.ndarray, side: str) -> np.ndarray:
+        """调用 dex_retargeting 的核心逻辑抽离"""
+        retargeting = self.retargetings[side]
+        human_indices = retargeting.optimizer.target_link_human_indices
+        human_keypoints = hand_21[human_indices, :]
+        return retargeting.retarget(human_keypoints)
+    
+    def _compute_output_from_qpos(self, qpos_full: np.ndarray, side: str) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        计算retargeting后的输出:
+            通过 SAPIEN FK 计算 hand_base_link 的实际位姿,因为 dummy joint 给出的是 root_link 的位姿,不是 hand_base_link 的位姿
+        """
+        sapien_robot = self.sapien_robots[side]
+        sapien_robot.set_qpos(qpos_full)
+        link_idx = self.hand_base_link_indices[side]
+        link_pose = sapien_robot.get_links()[link_idx].entity_pose
+
+        # 与 origin 对齐：link_pose.p 直接参与 concat
+        wrist_pos = link_pose.p
+        wrist_rotvec_raw = rotations.compact_axis_angle_from_quaternion(link_pose.q)
+        wrist_rotvec = self._ensure_axisangle_continuity(wrist_rotvec_raw, side)
+        wrist_pose = np.concatenate([wrist_pos, wrist_rotvec]).astype(np.float32)
+
+        desired_indices = self.desired_joint_indices[side]
+        finger_joints = qpos_full[desired_indices]
+        # 向量化符号修正：finger_joints * self.finger_correction_scale, robocasa的实际控制量不够，手动进行double控制量
+        finger_joints_corrected = (
+            finger_joints * self.finger_correction_scale
+        ).astype(np.float32)
+
+        return wrist_pose, finger_joints_corrected
     
     def retarget_from_45d(
         self,
         state_45d: np.ndarray,
+        state_left_wrist_rotvec: np.ndarray,
+        state_right_wrist_rotvec: np.ndarray,
     ) -> Dict[str, Dict[str, np.ndarray]]:
         """
         从45维state进行retargeting
@@ -384,132 +512,27 @@ class FourierHandRetargetAPI:
             3. 执行retargeting
             4. 转换输出格式
         """
-        state_45d = np.asarray(state_45d, dtype=np.float32).flatten()
-        if state_45d.shape[0] != 45:
-            raise ValueError(f"输入必须是45维，得到: {state_45d.shape}")
-        
+        state_45d = self._validate_input(state_45d)
+
         result = {}
         
-        # 处理左右手
-        offsets = {
-            'left': 0,   # [0:21]
-            'right': 21, # [21:42]
-        }
         
         for side in self.hand_sides:
-            offset = offsets[side]
-            
-            # 1. 从45维中提取21维关键点
-            key_points_21 = state_45d[offset:offset+21]
-            
-            # 解析21维格式：wrist_xyz(3) + 5tips_xyz(15) + wrist_rotvec(3)
-            wrist_xyz = key_points_21[0:3]           # 手腕位置
-            thumb_tip = key_points_21[3:6]           # 拇指尖
-            index_tip = key_points_21[6:9]           # 食指尖
-            middle_tip = key_points_21[9:12]         # 中指尖
-            ring_tip = key_points_21[12:15]          # 无名指尖
-            pinky_tip = key_points_21[15:18]         # 小指尖
-            wrist_rotvec = key_points_21[18:21]      # 手腕轴角旋转
-            
-            # 2. 组装6个关键点 [wrist, thumb, index, middle, ring, pinky]
-            keypoints_6x3 = np.stack([
-                wrist_xyz,
-                thumb_tip,
-                index_tip,
-                middle_tip,
-                ring_tip,
-                pinky_tip,
-            ], axis=0)  # (6, 3)
-            
-            # 3. Warmup处理（与原始脚本line 561-566一致）
-            if self._episode_frame_count[side] < self.warm_up_steps:
-                # 将rotvec转换为四元数（与原始脚本line 564一致）
-                wrist_quat = R.from_rotvec(wrist_rotvec).as_quat()  # [x, y, z, w]
-                
-                # scipy返回的是[x,y,z,w]，需要转换为[w,x,y,z]
-                wrist_quat_wxyz = np.array([
-                    wrist_quat[3],  # w
-                    wrist_quat[0],  # x
-                    wrist_quat[1],  # y
-                    wrist_quat[2],  # z
-                ])
-                
-                # 执行warmup（使用手腕位置作为joint）
-                self._warmup(
-                    wrist_pos=wrist_xyz,      # 手腕3D位置
-                    wrist_quat=wrist_quat_wxyz, # [w,x,y,z]
-                    side=side
-                )
-            
-            # 4. 重排序关键点以匹配MANO格式
-            # 从 [wrist, thumb, index, middle, ring, pinky] 
-            # 到 [thumb, index, middle, ring, pinky, wrist]
-            kp_reordered = keypoints_6x3[[1, 2, 3, 4, 5, 0]]  # (6, 3)
-            
-            # 5. 构造21点MANO数组（只填充我们有的6个点）
-            hand_21 = np.zeros((21, 3), dtype=np.float32)
-            # MANO 21点索引：[4, 8, 12, 16, 20, 0] 对应 [thumb_tip, index_tip, middle_tip, ring_tip, pinky_tip, wrist]
-            hand_21[[4, 8, 12, 16, 20, 0]] = kp_reordered
-            
-            # 6. 根据target_link_human_indices提取需要的关键点
-            retargeting = self.retargetings[side]
-            human_indices = retargeting.optimizer.target_link_human_indices
-            human_keypoints = hand_21[human_indices, :]  # (N, 3)
-            
-            # 7. Retarget（与原始脚本line 568一致）
-            # 返回完整的qpos（包含所有关节）
-            # qpos格式: [dummy_joints(6), ...其他关节(N)...]
-            # dummy_joints = [x_trans, y_trans, z_trans, x_rot, y_rot, z_rot]
-            qpos_full = retargeting.retarget(human_keypoints)
-            
-            # 8. 通过 SAPIEN FK 计算 hand_base_link 的实际位姿（与 hand_robot_viewer_fourier.py 保持一致）
-            # 因为 dummy joint 给出的是 root_link 的位姿，不是 hand_base_link 的位姿
-            sapien_robot = self.sapien_robots[side]
-            sapien_robot.set_qpos(qpos_full)
-            hand_base_link_idx = self.hand_base_link_indices[side]
-            link_pose = sapien_robot.get_links()[hand_base_link_idx].entity_pose  # sapien.Pose
-            
-            # 提取位置和旋转（与 hand_robot_viewer_fourier.py line 505-507 一致）
-            wrist_pos = link_pose.p  # (3,) 位置
-            wrist_rotvec_raw = rotations.compact_axis_angle_from_quaternion(link_pose.q)  # (3,) 轴角表示
-            
-            # 应用轴角连续性处理，避免等价表示跳变
-            wrist_rotvec = self._ensure_axisangle_continuity(wrist_rotvec_raw, side)
-            
-            # 组合成 6D wrist pose: [pos(3), rotvec(3)]
-            wrist_pose = np.concatenate([wrist_pos, wrist_rotvec]).astype(np.float32)
-            
-            # finger_joints: 从qpos_full中提取6个主动关节
-            # 顺序: [pinky, ring, middle, index, thumb_pitch, thumb_yaw]
-            # 这是config文件中target_joint_names的顺序，直接用于仿真控制
-            desired_indices = self.desired_joint_indices[side]
-            finger_joints = qpos_full[desired_indices]  # (6,)
-            
-            # 符号修正：为了与控制量统一，需要对某些关节取负号
-            # [pinky, ring, middle, index, thumb_pitch, thumb_yaw] 中
-            # pinky, ring, middle, index, thumb_yaw 需要取负号
-            # thumb_pitch 不需要取负号
-            finger_joints_corrected = finger_joints.copy()
-            finger_joints_corrected[0] = -1.64*finger_joints[0]  # pinky
-            finger_joints_corrected[1] = -1.64*finger_joints[1]  # ring
-            finger_joints_corrected[2] = -1.64*finger_joints[2]  # middle
-            finger_joints_corrected[3] = -1.64*finger_joints[3]  # index
-            # finger_joints_corrected[0] = -finger_joints[0]  # pinky
-            # finger_joints_corrected[1] = -finger_joints[1]  # ring
-            # finger_joints_corrected[2] = -finger_joints[2]  # middle
-            # finger_joints_corrected[3] = -finger_joints[3]  # index
-            finger_joints_corrected[4] = finger_joints[4]  # thumb_pitch (保持不变)
-            finger_joints_corrected[5] = -finger_joints[5]  # thumb_yaw
-            
-            # finger_joints_corrected[:4] = np.where(finger_joints_corrected[:4] > 0.2, 1.0, finger_joints_corrected[:4])
-            
-            # 确保shape正确
-            assert wrist_pose.shape == (6,), f"{side} wrist_pose shape错误: {wrist_pose.shape}, 期望(6,)"
-            assert finger_joints_corrected.shape == (6,), f"{side} finger_joints shape错误: {finger_joints_corrected.shape}, 期望(6,). desired_indices={desired_indices}, qpos_full.shape={qpos_full.shape}"
-            
+            keypoints_6x3, _  = self._extract_keypoints_from_45d(state_45d, side)
+            # wrist_rotvec改为从observation中提取
+            wrist_rotvec = state_left_wrist_rotvec if side == 'left' else state_right_wrist_rotvec
+            self._maybe_warmup(keypoints_6x3, wrist_rotvec, side)
+            hand_21 = self._build_mano_hand_21(keypoints_6x3)
+            qpos_full = self._run_retarget(hand_21, side)
+            wrist_pose, finger_correct_joints = self._compute_output_from_qpos(qpos_full, side)
+
+            assert wrist_pose.shape == (OUTPUT_WRIST_POSE_DIM,)
+            assert finger_correct_joints.shape == (OUTPUT_FINGER_JOINTS_DIM,)
+
+
             result[side] = {
                 'wrist_pose': wrist_pose,
-                'finger_joints': finger_joints_corrected,  # (6,) [pinky, ring, middle, index, thumb_pitch, thumb_yaw] (已符号修正)
+                'finger_joints': finger_correct_joints,  # (6,) [pinky, ring, middle, index, thumb_pitch, thumb_yaw] (已符号修正)
             }
             
             # 增加帧计数
@@ -519,73 +542,65 @@ class FourierHandRetargetAPI:
 
 
 
-# ============================================================================
-# 测试
-# ============================================================================
-if __name__ == "__main__":
-    print("=" * 80)
-    print("Testing FourierHandRetargetAPI")
-    print("=" * 80)
-    
-    # 初始化
-    print("\n[1] 初始化 FourierHandRetargetAPI...")
-    api = FourierHandRetargetAPI(warm_up_steps=1)
-    
-    # 模拟episode开始
-    print("\n[2] 开始新episode（调用reset）...")
-    api.reset()
-    
-    # 读取数据文件
-    data_file = Path("/vla/users/lijiayi/robocasa_datasets_full/pick_and_place_lerobot_task24_eepose/gr1_unified.PosttrainPnPNovelFromCuttingboardToBasketSplitA_GR1ArmsAndWaistFourierHands_1000_keypoints_v2/data/chunk-000/episode_000000_actions_first20.txt")
-    print(f"\n[3] 读取数据文件: {data_file}")
-    
-    frames_data = []
-    with open(data_file, 'r') as f:
-        for line_idx, line in enumerate(f):
-            if line_idx >= 3:  # 只读取前3帧（Frame 0, 1, 2）
+def _load_frames_from_file(
+    data_file: Path, max_frames: int = 3
+) -> List[Tuple[int, np.ndarray]]:
+    """从数据集文件中加载数据，验证retarget得效果"""
+    frames = []
+    with open(data_file) as f:
+        for i, line in enumerate(f):
+            if i >= max_frames:
                 break
-            # 解析格式: "Frame N: num1 num2 ... num45"
-            parts = line.strip().split(':')
+            parts = line.strip().split(":")
             if len(parts) != 2:
                 continue
             frame_num = int(parts[0].split()[1])
             numbers = parts[1].strip().split()
-            if len(numbers) != 45:
-                print(f"警告: Frame {frame_num} 的数据维度不是45维，实际为 {len(numbers)}")
+            if len(numbers) != INPUT_DIM:
+                logger.warning("Frame %d: expected %d dims, got %d", frame_num, INPUT_DIM, len(numbers))
                 continue
-            state_45d = np.array([float(x) for x in numbers], dtype=np.float32)
-            frames_data.append((frame_num, state_45d))
-    
-    print(f"   成功读取 {len(frames_data)} 帧数据")
-    
-    # 测试前3帧（包含warmup）
-    print("\n[4] 对前3帧进行retarget...")
-    print("=" * 80)
-    for frame_num, state_45d in frames_data:
+            state = np.array([float(x) for x in numbers], dtype=np.float32)
+            frames.append((frame_num, state))
+    return frames
+
+
+# ============================================================================
+# 测试
+# ============================================================================
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Test FourierHandRetargetAPI")
+    parser.add_argument(
+        "--data-file",
+        type=Path,
+        default=Path(
+            "/vla/users/lijiayi/robocasa_datasets_full/pick_and_place_lerobot_task24_eepose/"
+            "gr1_unified.PosttrainPnPNovelFromCuttingboardToBasketSplitA_GR1ArmsAndWaistFourierHands_1000_keypoints_v2/"
+            "data/chunk-000/episode_000000_actions_first20.txt"
+        ),
+        help="Path to episode actions file",
+    )
+    parser.add_argument("--max-frames", type=int, default=3, help="Max frames to test")
+    args = parser.parse_args()
+
+    print("=" * 60)
+    print("Testing FourierHandRetargetAPI")
+    print("=" * 60)
+
+    api = FourierHandRetargetAPI(warm_up_steps=1)
+    api.reset()
+    frames = _load_frames_from_file(args.data_file, args.max_frames)
+    print(f"Loaded {len(frames)} frames from {args.data_file}")
+
+    for frame_num, state_45d in frames:
         print(f"\n--- Frame {frame_num} ---")
-        
         result = api.retarget_from_45d(state_45d)
-        
-        # 打印每个时间步的retarget输出：手腕xyz + 轴角
-        for side in ['left', 'right']:
+        for side in ["left", "right"]:
             if side in result:
-                wrist_pose = result[side]['wrist_pose']
-                wrist_xyz = wrist_pose[0:3]  # 前3维是xyz位置
-                wrist_rotvec = wrist_pose[3:6]  # 后3维是轴角旋转
-                
-                print(f"\n{side.capitalize()}手:")
-                print(f"  手腕位置 (xyz): [{wrist_xyz[0]:.6f}, {wrist_xyz[1]:.6f}, {wrist_xyz[2]:.6f}]")
-                print(f"  手腕轴角 (rotvec): [{wrist_rotvec[0]:.6f}, {wrist_rotvec[1]:.6f}, {wrist_rotvec[2]:.6f}]")
-                
-                # 显示warmup状态
-                is_warmed = api._is_warmed_up[side]
-                print(f"  Warmed up: {is_warmed}")
-    
-    print("\n" + "=" * 80)
-    print("✅ Test completed!")
-    print("=" * 80)
-    print("\n说明:")
-    print("  - 第0帧会执行warmup（因为warm_up_steps=1）")
-    print("  - warmup使用wrist_xyz和wrist_rotvec信息")
-    print("  - 后续帧直接进行retarget")
-    print("  - 输出格式：wrist_pose(6) = [xyz(3), rotvec(3)]")
+                wp = result[side]["wrist_pose"]
+                fj = result[side]["finger_joints"]
+                print(f"  {side}: wrist_xyz={wp[:3].round(4)} | fingers={fj.round(4)} | warmed={api._is_warmed_up[side]}")
+
+    print("\n" + "=" * 60)
+    print("Test completed")
+    print("=" * 60)

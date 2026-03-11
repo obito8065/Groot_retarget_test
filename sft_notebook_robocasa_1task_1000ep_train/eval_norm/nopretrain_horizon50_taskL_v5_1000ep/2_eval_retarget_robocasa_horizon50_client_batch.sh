@@ -13,7 +13,7 @@ python3 scripts/simulation_service.py \
         --env_name gr1_unified/PnPWineToCabinetClose_GR1ArmsAndWaistFourierHands_Env \
         --port 51200 \
         --host localhost \
-        --video_dir /vla/users/lijiayi/unifytip_groot/output_video_record/output_retarget_1tasks_1000ep/n1.5_nopretrain_finetuneALL_on_robocasa_retarget_v5_1000ep_bs512_horizon50_taskL/80ksteps-batch1 \
+        --video_dir /vla/users/lijiayi/unifytip_groot/output_video_record/output_retarget_1tasks_1000ep/n1.5_nopretrain_finetuneALL_on_robocasa_retarget_v5_1000ep_bs512_horizon50_taskL_lr1e5/70ksteps-batch1-30episodes \
         --n_episodes 30 \
         --n_envs 1 \
         --max_episode_steps 500 \

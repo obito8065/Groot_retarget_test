@@ -760,10 +760,16 @@ class FourierHandRetargetAPI:
             # pinky, ring, middle, index, thumb_yaw 需要取负号
             # thumb_pitch 不需要取负号
             finger_joints_corrected = finger_joints.copy()
-            finger_joints_corrected[0] = -2*finger_joints[0]  # pinky
-            finger_joints_corrected[1] = -2*finger_joints[1]  # ring
-            finger_joints_corrected[2] = -2*finger_joints[2]  # middle
-            finger_joints_corrected[3] = -2*finger_joints[3]  # index
+            finger_joints_corrected[0] = -1*finger_joints[0]  # pinky
+            finger_joints_corrected[1] = -1*finger_joints[1]  # ring
+            finger_joints_corrected[2] = -1*finger_joints[2]  # middle
+            finger_joints_corrected[3] = -1*finger_joints[3]  # index
+
+            # finger_joints_corrected[0] = -2*finger_joints[0]  # pinky
+            # finger_joints_corrected[1] = -2*finger_joints[1]  # ring
+            # finger_joints_corrected[2] = -2*finger_joints[2]  # middle
+            # finger_joints_corrected[3] = -2*finger_joints[3]  # index
+
             # finger_joints_corrected[4] = finger_joints[4]  # thumb_pitch (保持不变)
             finger_joints_corrected[5] = -finger_joints[5]  # thumb_yaw
 

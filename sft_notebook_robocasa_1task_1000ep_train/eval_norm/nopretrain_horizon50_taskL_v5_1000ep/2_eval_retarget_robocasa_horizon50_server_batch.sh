@@ -12,7 +12,7 @@ export CUDA_VISIBLE_DEVICES=0
 
 
 python3 scripts/inference_service.py --server \
-    --model_path /vla/users/lijiayi/unifytip_groot/output_ckpt/n1.5_nopretrain_finetuneALL_on_robocasa_1000ep_taskL_retarget_v5_bs512_horizon50/checkpoint-70000 \
+    --model_path /vla/users/lijiayi/unifytip_groot/output_ckpt/n1.5_nopretrain_finetuneALL_on_robocasa_300ep_taskL_retarget_v5_bs512_horizon50_lr1e5/checkpoint-70000 \
     --data_config robocasa_retarget_50_horizon \
     --embodiment_tag robocasa \
     --port 51200 \

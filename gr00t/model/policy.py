@@ -297,6 +297,8 @@ class Gr00tPolicy(BasePolicy):
         left_arm_state = None
         right_arm_state = None
         # full_44dof_vector = None
+        state_left_wrist_rotvec = None
+        state_right_wrist_rotvec = None
         full_action_vector = None
 
         # ==========================================================
@@ -462,6 +464,10 @@ class Gr00tPolicy(BasePolicy):
                 right_arm_orig = obs_copy.get("state.right_arm", None)
                 left_hand_orig = obs_copy.get("state.left_hand", None)
                 right_hand_orig = obs_copy.get("state.right_hand", None)
+
+                # 保存observation中的wrist rotvec作为warmup输入
+                state_left_wrist_rotvec = obs_copy.get("state.left_arm", None)[..., 3:6][:,-1, :].squeeze() #只需要shape(3,)
+                state_right_wrist_rotvec = obs_copy.get("state.right_arm", None)[..., 3:6][:,-1, :].squeeze()
                 
                 if (left_hand_orig is not None and right_hand_orig is not None and
                     left_arm_orig is not None and right_arm_orig is not None):
@@ -730,8 +736,9 @@ class Gr00tPolicy(BasePolicy):
                             waist_3 = np.zeros(3, dtype=np.float32)       # 占位
                             state_45d = np.concatenate([left_21, right_21, waist_3])  # (45,)
                             
+
                             # 调用新的retarget API（支持warmup）
-                            result = self.fourier_hand_retargeter.retarget_from_45d(state_45d)
+                            result = self.fourier_hand_retargeter.retarget_from_45d(state_45d, state_left_wrist_rotvec, state_right_wrist_rotvec)
                         
                             # 提取左手的wrist pose和finger joints
                             if 'left' in result:

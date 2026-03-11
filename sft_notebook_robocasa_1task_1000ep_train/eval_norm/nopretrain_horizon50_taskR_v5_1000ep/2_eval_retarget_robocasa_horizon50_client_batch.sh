@@ -15,7 +15,7 @@ python3 scripts/simulation_service.py \
         --env_name gr1_unified/PosttrainPnPNovelFromCuttingboardToBasketSplitA_GR1ArmsAndWaistFourierHands_Env \
         --port 57309 \
         --host localhost \
-        --video_dir /vla/users/lijiayi/unifytip_groot/output_video_record/output_retarget_1tasks_1000ep/n1.5_nopretrain_finetuneALL_on_robocasa_retarget_v5_1000ep_bs384_horizon50_taskR/46ksteps-batch0 \
+        --video_dir /vla/users/lijiayi/unifytip_groot/output_video_record/output_retarget_1tasks_1000ep/n1.5_nopretrain_finetuneALL_on_robocasa_retarget_v5_1000ep_bs384_horizon50_taskR_lr1e5/50ksteps-batch0-100episodes \
          --n_episodes 100 \
         --n_envs 1 \
         --max_episode_steps 500 \
